@@ -222,7 +222,9 @@ def build_cdf(
         x_data = np.asarray(pdf[0], dtype=float)
         y_data = np.asarray(pdf[1], dtype=float)
         if x_data.shape != y_data.shape or x_data.ndim != 1:
-            raise ValueError("For tuple input, x_arr and y_arr must be 1D arrays of equal length.")
+            raise ValueError(
+                "For tuple input, x_arr and y_arr must be 1D arrays of equal length."
+            )
         if len(x_data) < 4:
             interp_fn = interpolate.interp1d(
                 x_data, y_data, kind="linear", bounds_error=False, fill_value=0.0
@@ -237,7 +239,9 @@ def build_cdf(
     cdf_vals = integrate.cumulative_trapezoid(y, x, initial=0.0)
     total = cdf_vals[-1]
     if total == 0:
-        raise ValueError("PDF integrates to 0 on the specified interval; check x_start/x_end or the PDF definition.")
+        raise ValueError(
+            "PDF integrates to 0 on the specified interval; check x_start/x_end or the PDF definition."
+        )
     if normalize:
         cdf_vals = cdf_vals / total
 
@@ -257,11 +261,11 @@ def build_cdf(
 
 
 def rate2(a: float) -> float:
-    return 2 * a - 2 * a**2
+    return a**2 + (1 - a) ** 2
 
 
 def sigma(steepness: float) -> float:
-    return 0.5 / steepness
+    return 1 / steepness
 
 
 def err_func_float(a: float, b: float, mid: float, rate: float) -> float:
@@ -284,21 +288,21 @@ def get_cdf_op(
     cdf_rand: Callable[[float, float], float],
 ) -> Callable[[float, float], float]:
     """
-     Build an opinion-peer conditional CDF constrained by op_rec_mass.
+    Build an opinion-peer conditional CDF constrained by op_rec_mass.
 
-     Fix summary
-     -----------
-     1. find_bounds returns distances (a, b), not absolute coordinates.
-         Convert to absolute bounds lb = x - a and ub = x + b before interpolation.
+    Fix summary
+    -----------
+    1. find_bounds returns distances (a, b), not absolute coordinates.
+        Convert to absolute bounds lb = x - a and ub = x + b before interpolation.
 
-     2. Normalization direction was wrong in the original version.
-         Divide by the actual in-window mass (nominally op_rec_mass).
+    2. Normalization direction was wrong in the original version.
+        Divide by the actual in-window mass (nominally op_rec_mass).
 
-     3. fill_value=-1 is meaningless for distances.
-         Use endpoint extrapolation to avoid invalid out-of-range coordinates.
+    3. fill_value=-1 is meaningless for distances.
+        Use endpoint extrapolation to avoid invalid out-of-range coordinates.
 
-     4. Performance: for fixed x, integrate.quad repeatedly calls cdf_op(x, ·).
-         Use a per-x cache to avoid redundant evaluations.
+    4. Performance: for fixed x, integrate.quad repeatedly calls cdf_op(x, ·).
+        Use a per-x cache to avoid redundant evaluations.
     """
     smpl_x_list, smpl_bounds_list = adaptive_discrete_sampling(
         lambda x: find_bounds(
@@ -401,13 +405,16 @@ def get_cdf_op(
 
 
 def naive_integrate(x: np.ndarray, sf: np.ndarray) -> np.ndarray:
-    ret = np.array([
-        integrate.trapezoid(sf[:i+1], x[:i+1]) if i > 0 else 0.0 \
+    ret = np.array(
+        [
+            integrate.trapezoid(sf[: i + 1], x[: i + 1]) if i > 0 else 0.0
             for i in range(len(x))
-    ])
+        ]
+    )
     ret_normalizer = np.sum(ret) / len(x)
     ret -= ret_normalizer
     return ret
+
 
 # endregion
 
@@ -421,14 +428,8 @@ eps = 0.45
 
 op_rec_mass = k_r / (N - k_n)
 
-rate_polarized_same = 0.05
-rate_polarized_diff = 1 - rate_polarized_same
-
-rate2_polarized_same = rate2(rate_polarized_same)
-rate2_polarized_diff = 1 - rate2_polarized_same
-
-steepness_cons = 16
-steepness_div = steepness_cons * 2
+steepness_cons_values = [8, 64]
+rate_polarized_same_values = [1 - 0.1, 1 - 0.0125]
 
 
 # endregion
@@ -490,55 +491,74 @@ def cdf_init_op(x: float, xp: float) -> float:
 
 # region Consensus State
 
-s_cons = sigma(steepness_cons)
 
+def build_cons_cdfs(
+    steepness_cons_val: float,
+) -> Tuple[
+    Callable[[float, float], float],
+    Callable[[float, float], float],
+    Callable[[float, float], float],
+    Callable[[float, float], float],
+]:
+    s_cons = sigma(steepness_cons_val)
 
-def cdf_cons_neighbor(_x: float, xp: float) -> float:
-    return float(norm.cdf(xp, loc=0, scale=s_cons))
+    def cdf_cons_neighbor(_x: float, xp: float) -> float:
+        return float(norm.cdf(xp, loc=0, scale=s_cons))
 
-
-cdf_cons_rand = cdf_cons_neighbor
-cdf_cons_st = cdf_cons_neighbor
-cdf_cons_op = get_cdf_op(cdf_cons_rand)
+    cdf_cons_rand = cdf_cons_neighbor
+    cdf_cons_st = cdf_cons_neighbor
+    cdf_cons_op = get_cdf_op(cdf_cons_rand)
+    return cdf_cons_neighbor, cdf_cons_rand, cdf_cons_st, cdf_cons_op
 
 
 # endregion
 
 # region Polarized State
 
-s_div = sigma(steepness_div)
 
+def build_div_cdfs(
+    steepness_div_val: float,
+    rate_polarized_same: float,
+) -> Tuple[
+    Callable[[float, float], float],
+    Callable[[float, float], float],
+    Callable[[float, float], float],
+    Callable[[float, float], float],
+]:
+    s_div = sigma(steepness_div_val)
 
-def cdf_div_base(x: float, xp: float, r1: float, r2: float) -> float:
-    return float(
-        r1 * norm.cdf(xp, loc=-0.5, scale=s_div)
-        + r2 * norm.cdf(xp, loc=0.5, scale=s_div)
-    )
+    rate_polarized_diff = 1 - rate_polarized_same
 
+    rate2_polarized_same = rate2(rate_polarized_same)
+    rate2_polarized_diff = 1 - rate2_polarized_same
 
-def cdf_div_neighbor(x: float, xp: float) -> float:
-    r1, r2 = (
-        (rate_polarized_same, rate_polarized_diff)
-        if x < 0
-        else (rate_polarized_diff, rate_polarized_same)
-    )
-    return cdf_div_base(x, xp, r1, r2)
+    def cdf_div_base(x: float, xp: float, r1: float, r2: float) -> float:
+        return float(
+            r1 * norm.cdf(xp, loc=-0.5, scale=s_div)
+            + r2 * norm.cdf(xp, loc=0.5, scale=s_div)
+        )
 
+    def cdf_div_neighbor(x: float, xp: float) -> float:
+        r1, r2 = (
+            (rate_polarized_same, rate_polarized_diff)
+            if x < 0
+            else (rate_polarized_diff, rate_polarized_same)
+        )
+        return cdf_div_base(x, xp, r1, r2)
 
-def cdf_div_rand(x: float, xp: float) -> float:
-    return cdf_div_base(x, xp, 0.5, 0.5)
+    def cdf_div_rand(x: float, xp: float) -> float:
+        return cdf_div_base(x, xp, 0.5, 0.5)
 
+    def cdf_div_st(x: float, xp: float) -> float:
+        r1, r2 = (
+            (rate2_polarized_same, rate2_polarized_diff)
+            if x < 0
+            else (rate2_polarized_diff, rate2_polarized_same)
+        )
+        return cdf_div_base(x, xp, r1, r2)
 
-def cdf_div_st(x: float, xp: float) -> float:
-    r1, r2 = (
-        (rate2_polarized_same, rate2_polarized_diff)
-        if x < 0
-        else (rate2_polarized_diff, rate2_polarized_same)
-    )
-    return cdf_div_base(x, xp, r1, r2)
-
-
-cdf_div_op = get_cdf_op(cdf_div_rand)
+    cdf_div_op = get_cdf_op(cdf_div_rand)
+    return cdf_div_neighbor, cdf_div_rand, cdf_div_st, cdf_div_op
 
 
 # endregion
@@ -557,21 +577,42 @@ if __name__ == "__main__":
         cdf_init_neighbor, cdf_init_op, k_n / k, k_r / k, eps, x_axis
     )
 
-    _, sf_cons_rand = compute_P_mu_cdf(cdf_cons_neighbor, eps, x_axis)
-    sf_cons_st = sf_cons_rand
-    _, sf_cons_op = compute_P_mu_combined_cdf(
-        cdf_cons_neighbor, cdf_cons_op, k_n / k, k_r / k, eps, x_axis
-    )
+    # Sweep steepness for e2-e5: consensual/diverged at steepness 8 and 32.
+    pot_cons = {"Rand.": {}, "St.": {}, "Op.": {}}
+    pot_div = {"Rand.": {}, "St.": {}, "Op.": {}}
 
-    _, sf_div_rand = compute_P_mu_combined_cdf(
-        cdf_div_neighbor, cdf_div_rand, k_n / k, k_r / k, eps, x_axis
-    )
-    _, sf_div_st = compute_P_mu_combined_cdf(
-        cdf_div_neighbor, cdf_div_st, k_n / k, k_r / k, eps, x_axis
-    )
-    _, sf_div_op = compute_P_mu_combined_cdf(
-        cdf_div_neighbor, cdf_div_op, k_n / k, k_r / k, eps, x_axis
-    )
+    for steep_cons, rate_polarized_same in zip(
+        steepness_cons_values, rate_polarized_same_values
+    ):
+        steep_div = steep_cons * 2
+
+        cdf_cons_neighbor, _, cdf_cons_st, cdf_cons_op = build_cons_cdfs(steep_cons)
+        _, sf_cons_rand = compute_P_mu_cdf(cdf_cons_neighbor, eps, x_axis)
+        _, sf_cons_st = compute_P_mu_cdf(cdf_cons_st, eps, x_axis)
+        _, sf_cons_op = compute_P_mu_combined_cdf(
+            cdf_cons_neighbor, cdf_cons_op, k_n / k, k_r / k, eps, x_axis
+        )
+
+        cdf_div_neighbor, cdf_div_rand, cdf_div_st, cdf_div_op = build_div_cdfs(
+            steep_div, rate_polarized_same
+        )
+        _, sf_div_rand = compute_P_mu_combined_cdf(
+            cdf_div_neighbor, cdf_div_rand, k_n / k, k_r / k, eps, x_axis
+        )
+        _, sf_div_st = compute_P_mu_combined_cdf(
+            cdf_div_neighbor, cdf_div_st, k_n / k, k_r / k, eps, x_axis
+        )
+        _, sf_div_op = compute_P_mu_combined_cdf(
+            cdf_div_neighbor, cdf_div_op, k_n / k, k_r / k, eps, x_axis
+        )
+
+        pot_cons["Rand."][steep_cons] = naive_integrate(x_axis, x_axis - sf_cons_rand)
+        pot_cons["St."][steep_cons] = naive_integrate(x_axis, x_axis - sf_cons_st)
+        pot_cons["Op."][steep_cons] = naive_integrate(x_axis, x_axis - sf_cons_op)
+
+        pot_div["Rand."][steep_cons] = naive_integrate(x_axis, x_axis - sf_div_rand)
+        pot_div["St."][steep_cons] = naive_integrate(x_axis, x_axis - sf_div_st)
+        pot_div["Op."][steep_cons] = naive_integrate(x_axis, x_axis - sf_div_op)
 
     # endregion
 
@@ -581,42 +622,71 @@ if __name__ == "__main__":
     pot_init_st = naive_integrate(x_axis, x_axis - sf_init_st)
     pot_init_op = naive_integrate(x_axis, x_axis - sf_init_op)
 
-    pot_cons_rand = naive_integrate(x_axis, x_axis - sf_cons_rand)
-    pot_cons_st = naive_integrate(x_axis, x_axis - sf_cons_st)
-    pot_cons_op = naive_integrate(x_axis, x_axis - sf_cons_op)
-
-    pot_div_rand = naive_integrate(x_axis, x_axis - sf_div_rand)
-    pot_div_st = naive_integrate(x_axis, x_axis - sf_div_st)
-    pot_div_op = naive_integrate(x_axis, x_axis - sf_div_op)
-
-    fig, axes = plt_figure(n_row=1, n_col=3)
-    ax_init, ax_cons, ax_div = axes
+    fig, axes = plt_figure(n_row=1, n_col=5, total_width=16)
+    ax_init, ax_cons_1, ax_cons_2, ax_div_1, ax_div_2 = axes
 
     ax_init.plot(x_axis, pot_init_rand, label="Rand.", color="tab:blue")
     ax_init.plot(x_axis, pot_init_st, label="St.", color="tab:orange", linestyle="--")
     ax_init.plot(x_axis, pot_init_op, label="Op.", color="tab:green")
 
-    ax_cons.plot(x_axis, pot_cons_rand, label="Rand.", color="tab:blue")
-    ax_cons.plot(x_axis, pot_cons_st, label="St.", color="tab:orange", linestyle="--")
-    ax_cons.plot(x_axis, pot_cons_op, label="Op.", color="tab:green")
+    # Keep original mechanism color/style mapping.
+    for ax, steep_cons in [
+        (ax_cons_1, steepness_cons_values[0]),
+        (ax_cons_2, steepness_cons_values[1]),
+    ]:
+        ax.plot(x_axis, pot_cons["Rand."][steep_cons], color="tab:blue")
+        ax.plot(x_axis, pot_cons["St."][steep_cons], color="tab:orange", linestyle="--")
+        ax.plot(x_axis, pot_cons["Op."][steep_cons], color="tab:green")
 
-    ax_div.plot(x_axis, pot_div_rand, label="Rand.", color="tab:blue")
-    ax_div.plot(x_axis, pot_div_st, label="St.", color="tab:orange", linestyle="--")
-    ax_div.plot(x_axis, pot_div_op, label="Op.", color="tab:green")
+    for ax, steep_cons in [
+        (ax_div_1, steepness_cons_values[0]),
+        (ax_div_2, steepness_cons_values[1]),
+    ]:
+        ax.plot(x_axis, pot_div["Rand."][steep_cons], color="tab:blue")
+        ax.plot(x_axis, pot_div["St."][steep_cons], color="tab:orange", linestyle="--")
+        ax.plot(x_axis, pot_div["Op."][steep_cons], color="tab:green")
 
-    ax_init.set_title("(a) Initial", loc="left")
-    ax_cons.set_title("(b) Consensus", loc="left")
-    ax_div.set_title("(c) Polarized", loc="left")
+    ax_init.set_title("(e1) Initial", loc="left")
+    ax_cons_1.set_title(r"(e2) Consensual, $\kappa=8$", loc="left")
+    ax_cons_2.set_title(r"(e3) Consensual, $\kappa=64$", loc="left")
+    ax_div_1.set_title(r"(e4) Diverged, $\kappa=8, k_d=0.1$", loc="left")
+    ax_div_2.set_title(r"(e5) Diverged, $\kappa=64, k_d=0.0125$", loc="left")
 
     for ax in axes:
         ax.grid(True, linestyle="--", alpha=0.5)
         ax.set_xlim(-1, 1)
         ax.set_xlabel(r"$x$")
-        ax.set_ylabel(r"$V(x)$")
-        ax.legend()
+
+    # Unify y-axis across all five panels and show y ticks/label only on the leftmost axis.
+    all_pots = [
+        pot_init_rand,
+        pot_init_st,
+        pot_init_op,
+        pot_cons["Rand."][steepness_cons_values[0]],
+        pot_cons["St."][steepness_cons_values[0]],
+        pot_cons["Op."][steepness_cons_values[0]],
+        pot_cons["Rand."][steepness_cons_values[1]],
+        pot_cons["St."][steepness_cons_values[1]],
+        pot_cons["Op."][steepness_cons_values[1]],
+        pot_div["Rand."][steepness_cons_values[0]],
+        pot_div["St."][steepness_cons_values[0]],
+        pot_div["Op."][steepness_cons_values[0]],
+        pot_div["Rand."][steepness_cons_values[1]],
+        pot_div["St."][steepness_cons_values[1]],
+        pot_div["Op."][steepness_cons_values[1]],
+    ]
+    y_min = min(float(np.min(v)) for v in all_pots)
+    y_max = max(float(np.max(v)) for v in all_pots)
+    y_pad = 0.04 * max(y_max - y_min, 1e-9)
+    for ax in axes:
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    ax_init.set_ylabel(r"$V(x)$")
+    ax_init.legend()
+    for ax in [ax_cons_1, ax_cons_2, ax_div_1, ax_div_2]:
+        ax.set_ylabel("")
+        ax.tick_params(axis="y", labelleft=False)
 
     plt_save_and_close(fig, "fig/f_mech_explain_potential")
 
     # endregion
-
-

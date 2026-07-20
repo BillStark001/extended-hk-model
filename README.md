@@ -209,6 +209,24 @@ Each simulation produces:
 
 ## Data Analysis
 
+### Mesoscopic density solver
+
+The independent Python solver under `works/kinetic/` evolves opinion density,
+conditional opinion velocity, and directed edge density without reposts or
+historical posts. It uses the same `I_p`, `I_h`, `I_s`, and `I_w` definitions
+as the full-model analysis, with the corrected `epsilon - epsilon**2 / 4`
+random baseline for `I_h`, and supports optional reflecting diffusion.
+
+```bash
+python -m works.solve_kinetic
+python -m works.solve_kinetic --noise 1e-5 --tag noise_1e-5 \
+  --output-dir kinetic_output/noise_1e-5
+python -m works.sweep_kinetic
+```
+
+See `works/kinetic/README.md` for the closure assumptions and
+`works/kinetic/RESULTS.md` for the initial PbS/SbP results.
+
 ### Event Database Schema
 
 The event database tracks three event types:

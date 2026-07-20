@@ -36,3 +36,4 @@ from .distance import (
     DistanceResult,
     DistanceCalculator,
 )
+from .homophily import normalize_homophily, uniform_concordance_probability

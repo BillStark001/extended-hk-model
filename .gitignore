@@ -163,6 +163,7 @@ run**
 fig**
 fig_**
 run_**
+kinetic_output/
 
 # cache files
 basic_data_cache.pkl

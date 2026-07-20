@@ -17,6 +17,7 @@ from stats import (
     area_under_curve,
     first_more_or_equal_than,
     merge_data_with_axes,
+    normalize_homophily,
 )
 from utils.context import Context
 
@@ -209,11 +210,7 @@ def calc_homophily(rec: RawSimulationRecord, step: int):
   h_index_raw: float = np.mean(f_slice / f, dtype=float)
   # normalize: random state = 0, convergence state = 1
   eps = rec.metadata['HKParams']['Tolerance']
-  clip_factor: float = eps - (eps ** 2) / 8
-  h_index = (h_index_raw - clip_factor) / (1 - clip_factor)
-  if h_index < 0:
-    return 0
-  return h_index
+  return normalize_homophily(h_index_raw, eps)
 
 
 def sanitize_index_series(

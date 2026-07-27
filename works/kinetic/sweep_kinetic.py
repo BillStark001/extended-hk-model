@@ -3,6 +3,8 @@
 This command does not invoke the Go microscopic simulator. It evolves the
 node and directed-edge density fields from :mod:`works.kinetic.solver`, then
 plots all 64 trajectories with the full-model index definitions.
+
+Run as ``python -m works.kinetic.sweep_kinetic``.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from works.kinetic import (
     calculate_index_series,
     solve,
 )
+from works.kinetic.cli_utils import first_crossing_or_nan, pathway_label
 
 
 RATES = np.asarray([0.005, 0.01, 0.03, 0.05, 0.1, 0.3, 0.5, 1.0])
@@ -40,15 +43,6 @@ class SweepResult:
     pathway: float
     t_polarization: float
     t_homophily: float
-
-
-def _first_crossing(
-    time: np.ndarray,
-    values: np.ndarray,
-    threshold: float = 0.5,
-) -> float:
-    found = np.flatnonzero(values >= threshold)
-    return float(time[found[0]]) if found.size else float("nan")
 
 
 def _solve_case(
@@ -71,25 +65,17 @@ def _solve_case(
         homophily=indices.homophily,
         subjective=indices.subjective,
         pathway=indices.pathway,
-        t_polarization=_first_crossing(
+        t_polarization=first_crossing_or_nan(
             indices.time, indices.polarization
         ),
-        t_homophily=_first_crossing(indices.time, indices.homophily),
+        t_homophily=first_crossing_or_nan(
+            indices.time, indices.homophily
+        ),
     )
 
 
 def _path_label(result: SweepResult) -> str:
-    if np.isnan(result.t_polarization) and np.isnan(result.t_homophily):
-        return "unresolved"
-    if np.isnan(result.t_homophily):
-        return "PbS"
-    if np.isnan(result.t_polarization):
-        return "SbP"
-    if result.t_polarization < result.t_homophily:
-        return "PbS"
-    if result.t_homophily < result.t_polarization:
-        return "SbP"
-    return "simultaneous"
+    return pathway_label(result.t_polarization, result.t_homophily)
 
 
 def _result_arrays(results: list[SweepResult]) -> dict[str, np.ndarray]:
@@ -134,6 +120,8 @@ def _save_data(
         q=RATES,
         epsilon=np.asarray(params.epsilon),
         noise_diffusion=np.asarray(params.noise_diffusion),
+        recsys=np.asarray(params.recsys),
+        random_mix=np.asarray(params.random_mix),
         **arrays,
     )
     fieldnames = [
@@ -173,6 +161,7 @@ def _save_data(
 def _plot_path_grid(
     arrays: dict[str, np.ndarray],
     figure_path: Path,
+    params: KineticParameters,
 ) -> None:
     setup_paper_params()
     fig, axes = plt.subplots(
@@ -234,7 +223,8 @@ def _plot_path_grid(
     colorbar.set_label(r"pathway index $I_w$")
     fig.suptitle(
         r"Mesoscopic $I_p$--$I_h$ trajectories "
-        r"($p=0$, $k_h=0$, $D_0=10^{-5}$)",
+        rf"({params.recsys}; $p=0$, $k_h=0$, "
+        rf"$D_0={params.noise_diffusion:g}$)",
         fontsize=14,
     )
     for suffix in (".pdf", ".png"):
@@ -340,7 +330,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--recsys",
         default="random",
-        choices=("random", "opinion", "structure"),
+        choices=(
+            "random", "opinion", "opinionm9", "structure", "structurem9",
+        ),
     )
     parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 1, 4))
     parser.add_argument(
@@ -395,6 +387,7 @@ def main() -> None:
     _plot_path_grid(
         arrays,
         args.figure_dir / f"f_kinetic_pathway_grid_{args.tag}",
+        base,
     )
     _plot_summary(
         arrays,

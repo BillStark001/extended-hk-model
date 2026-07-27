@@ -42,6 +42,9 @@ class KineticParameters:
     mean_degree: float = 15.0
     recsys_count: int = 10
     recsys: str = "random"
+    # The microscopic ``*M9`` systems reserve this fraction of the finite
+    # recommendation slots for Random.  At the standard RecsysCount=10 this
+    # gives one random and nine ranked recommendations.
     random_mix: float = 0.1
     opinion_bandwidth: float = 0.1
     noise_diffusion: float = 0.0
@@ -69,6 +72,11 @@ class KineticParameters:
             raise ValueError("noise_diffusion must be non-negative")
         if self.dt <= 0 or self.steps < 1 or self.record_every < 1:
             raise ValueError("dt, steps, and record_every must be positive")
+        if self.recsys.casefold() not in {
+            "random", "rand", "opinion", "op", "structure", "st",
+            "opinionm9", "structurem9",
+        }:
+            raise ValueError(f"unsupported recommendation system: {self.recsys}")
 
 
 @dataclass
@@ -110,23 +118,28 @@ def _conditional_neighbors(
     return _row_normalize(neighbors, fallback)
 
 
-def _recommendation_kernel(
+def _recommendation_channels(
     params: KineticParameters,
     x: FloatArray,
     rho: FloatArray,
     neighbors: FloatArray,
-) -> FloatArray:
-    """Return one recommendation-slot distribution for every source bin.
+) -> tuple[FloatArray, FloatArray, int, int]:
+    """Return random/core kernels and their finite recommendation-slot counts.
 
     The structure kernel is an outgoing-common-neighbor pair closure. The
     exact simulator uses directed in/out common-neighbor rankings, which
     requires triplet densities and cannot be recovered from ``edge`` alone.
+
+    ``OpinionM9`` and ``StructureM9`` are not aliases for the pure systems:
+    they reserve ``round(RecsysCount * random_mix)`` slots for Random.  This
+    reproduces the microscopic default of one random plus nine ranked items
+    when ``RecsysCount=10`` and ``random_mix=0.1``.
     """
 
     random_kernel = np.broadcast_to(rho, (x.size, x.size)).copy()
     recsys = params.recsys.casefold()
     if recsys in {"random", "rand"}:
-        return random_kernel
+        return random_kernel, random_kernel, params.recsys_count, 0
 
     if recsys in {"opinion", "opinionm9", "op"}:
         delta = x[None, :] - x[:, None]
@@ -139,7 +152,31 @@ def _recommendation_kernel(
     else:
         raise ValueError(f"unsupported recommendation system: {params.recsys}")
 
-    return params.random_mix * random_kernel + (1 - params.random_mix) * core
+    if recsys in {"opinionm9", "structurem9"}:
+        random_slots = int(
+            np.floor(params.recsys_count * params.random_mix + 0.5)
+        )
+        random_slots = min(max(random_slots, 0), params.recsys_count)
+    else:
+        random_slots = 0
+    core_slots = params.recsys_count - random_slots
+    return random_kernel, core, random_slots, core_slots
+
+
+def _recommendation_kernel(
+    params: KineticParameters,
+    x: FloatArray,
+    rho: FloatArray,
+    neighbors: FloatArray,
+) -> FloatArray:
+    """Return the expected source distribution of one recommendation slot."""
+
+    random_kernel, core, random_slots, core_slots = _recommendation_channels(
+        params, x, rho, neighbors
+    )
+    return (
+        random_slots * random_kernel + core_slots * core
+    ) / params.recsys_count
 
 
 def _compute_fields(
@@ -152,7 +189,12 @@ def _compute_fields(
 
     k = params.mean_degree
     neighbors = _conditional_neighbors(rho, edge, k)
-    recommendations = _recommendation_kernel(params, x, rho, neighbors)
+    random_kernel, core_kernel, random_slots, core_slots = (
+        _recommendation_channels(params, x, rho, neighbors)
+    )
+    recommendations = (
+        random_slots * random_kernel + core_slots * core_kernel
+    ) / params.recsys_count
 
     delta = x[None, :] - x[:, None]
     concordant = np.abs(delta) <= params.epsilon
@@ -168,9 +210,16 @@ def _compute_fields(
 
     discordant = ~concordant
     discordant_probability = np.sum(discordant * neighbors, axis=1)
-    concordant_rec_probability = np.sum(
-        concordant * recommendations, axis=1
+    concordant_random_probability = np.sum(
+        concordant * random_kernel, axis=1
     )
+    concordant_core_probability = np.sum(
+        concordant * core_kernel, axis=1
+    )
+    concordant_rec_probability = (
+        random_slots * concordant_random_probability
+        + core_slots * concordant_core_probability
+    ) / params.recsys_count
 
     loss = np.divide(
         discordant * neighbors,
@@ -178,11 +227,14 @@ def _compute_fields(
         out=np.zeros_like(edge),
         where=discordant_probability[:, None] > 1e-15,
     )
+    concordant_recommendation_mass = (
+        random_slots * random_kernel + core_slots * core_kernel
+    )
     gain = np.divide(
-        concordant * recommendations,
-        concordant_rec_probability[:, None],
+        concordant * concordant_recommendation_mass,
+        (params.recsys_count * concordant_rec_probability)[:, None],
         out=np.zeros_like(edge),
-        where=concordant_rec_probability[:, None] > 1e-15,
+        where=(params.recsys_count * concordant_rec_probability)[:, None] > 1e-15,
     )
 
     # Probability that finite followee/recommendation samples contain at
@@ -190,10 +242,9 @@ def _compute_fields(
     eligibility = (
         1 - np.power(1 - discordant_probability, params.mean_degree)
     ) * (
-        1 - np.power(
-            1 - concordant_rec_probability,
-            params.recsys_count,
-        )
+        1
+        - np.power(1 - concordant_random_probability, random_slots)
+        * np.power(1 - concordant_core_probability, core_slots)
     )
     event_rate = params.rewiring * rho * eligibility
     rewiring_flux = event_rate[:, None] * (gain - loss)

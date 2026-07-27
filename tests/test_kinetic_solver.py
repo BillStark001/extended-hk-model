@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from works.kinetic import KineticParameters, calculate_index_series, solve
+from works.kinetic.solver import _recommendation_channels, _recommendation_kernel
 from stats.homophily import uniform_concordance_probability
 
 
@@ -54,6 +55,42 @@ class KineticSolverTests(unittest.TestCase):
         indices = calculate_index_series(trajectory)
         self.assertAlmostEqual(float(indices.polarization[0]), 0.0, places=12)
         self.assertAlmostEqual(float(indices.homophily[0]), 0.0, places=12)
+
+    def test_m9_uses_one_random_and_nine_ranked_slots(self):
+        x = np.linspace(-1.0, 1.0, 31)
+        rho = np.full(x.size, 1 / x.size)
+        neighbors = np.broadcast_to(rho, (x.size, x.size)).copy()
+        random_kernel, core, random_slots, core_slots = (
+            _recommendation_channels(
+                KineticParameters(recsys="opinionm9"), x, rho, neighbors
+            )
+        )
+        self.assertEqual((random_slots, core_slots), (1, 9))
+        m9 = _recommendation_kernel(
+            KineticParameters(recsys="opinionm9"), x, rho, neighbors
+        )
+        np.testing.assert_allclose(m9, 0.1 * random_kernel + 0.9 * core)
+        pure = _recommendation_kernel(
+            KineticParameters(recsys="opinion"), x, rho, neighbors
+        )
+        np.testing.assert_allclose(pure, core)
+        self.assertGreater(float(np.max(np.abs(m9 - pure))), 1e-6)
+
+    def test_structure_m9_is_distinct_from_pure_structure(self):
+        x = np.linspace(-1.0, 1.0, 21)
+        rho = np.full(x.size, 1 / x.size)
+        neighbors = np.broadcast_to(rho, (x.size, x.size)).copy()
+        neighbors[0] = 0.0
+        neighbors[0, :4] = 0.25
+        neighbors[-1] = 0.0
+        neighbors[-1, -4:] = 0.25
+        pure = _recommendation_kernel(
+            KineticParameters(recsys="structure"), x, rho, neighbors
+        )
+        m9 = _recommendation_kernel(
+            KineticParameters(recsys="structurem9"), x, rho, neighbors
+        )
+        self.assertGreater(float(np.max(np.abs(m9 - pure))), 1e-6)
 
     def test_baseline_parameters_produce_opposite_path_orderings(self):
         results = {}

@@ -2,8 +2,8 @@
 
 Run from the repository root with, for example:
 
-    python -m works.solve_kinetic
-    python -m works.solve_kinetic --noise 1e-5 --tag noise_1e-5
+    python -m works.kinetic.solve_kinetic
+    python -m works.kinetic.solve_kinetic --noise 1e-5 --tag noise_1e-5
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from works.kinetic import (
     calculate_index_series,
     solve,
 )
+from works.kinetic.cli_utils import first_crossing, pathway_label
 
 
 @dataclass
@@ -35,21 +36,10 @@ class ScenarioResult:
     indices: IndexSeries
 
 
-def _first_crossing(time: np.ndarray, values: np.ndarray, threshold: float):
-    found = np.flatnonzero(values >= threshold)
-    return float(time[found[0]]) if found.size else None
-
-
 def _path_label(indices: IndexSeries, threshold: float = 0.5) -> str:
-    t_p = _first_crossing(indices.time, indices.polarization, threshold)
-    t_h = _first_crossing(indices.time, indices.homophily, threshold)
-    if t_p is None and t_h is None:
-        return "unresolved"
-    if t_h is None or (t_p is not None and t_p < t_h):
-        return "PbS"
-    if t_p is None or t_h < t_p:
-        return "SbP"
-    return "simultaneous"
+    t_p = first_crossing(indices.time, indices.polarization, threshold)
+    t_h = first_crossing(indices.time, indices.homophily, threshold)
+    return pathway_label(t_p, t_h)
 
 
 def _save_result(result: ScenarioResult, output_dir: Path) -> None:
@@ -242,10 +232,10 @@ def _write_summary(results: list[ScenarioResult], output_dir: Path) -> None:
                     "recsys": params.recsys,
                     "path": _path_label(indices),
                     "I_w": indices.pathway,
-                    "t_Ip_0.5": _first_crossing(
+                    "t_Ip_0.5": first_crossing(
                         indices.time, indices.polarization, 0.5
                     ),
-                    "t_Ih_0.5": _first_crossing(
+                    "t_Ih_0.5": first_crossing(
                         indices.time, indices.homophily, 0.5
                     ),
                     "I_p_final": indices.polarization[-1],
@@ -264,7 +254,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dt", type=float, default=1.0)
     parser.add_argument("--epsilon", type=float, default=0.45)
     parser.add_argument("--noise", type=float, default=0.0, help="reflecting diffusion D0")
-    parser.add_argument("--recsys", default="random", choices=("random", "opinion", "structure"))
+    parser.add_argument(
+        "--recsys",
+        default="random",
+        choices=(
+            "random", "opinion", "opinionm9", "structure", "structurem9",
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("kinetic_output"))
     parser.add_argument("--figure-dir", type=Path, default=Path("fig"))
     parser.add_argument("--tag", default="noiseless")

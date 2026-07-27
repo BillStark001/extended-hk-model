@@ -21,13 +21,13 @@ Run the two parameter choices already used by the microscopic mechanism
 experiments:
 
 ```sh
-python -m works.solve_kinetic
+python -m works.kinetic.solve_kinetic
 ```
 
 Add a small background diffusion:
 
 ```sh
-python -m works.solve_kinetic \
+python -m works.kinetic.solve_kinetic \
   --noise 1e-5 \
   --tag noise_1e-5 \
   --output-dir kinetic_output/noise_1e-5
@@ -37,7 +37,14 @@ Run the paper's complete 8-by-8 influence/rewiring grid with the Python
 mesoscopic solver only:
 
 ```sh
-python -m works.sweep_kinetic
+python -m works.kinetic.sweep_kinetic
+```
+
+Compare Random, Opinion, OpinionM9, Structure, and StructureM9 on that same
+grid:
+
+```sh
+python -m works.kinetic.sweep_kinetic_recsys
 ```
 
 The default sweep uses `p=0`, `k_h=0`, `D0=1e-5`, 4,000 time steps, and four
@@ -55,4 +62,7 @@ The random recommendation kernel is exact under the continuum random-mixing
 closure. Opinion recommendation uses a soft opinion-ranking kernel. Structure
 recommendation uses an outgoing-common-neighbor pair closure; the exact
 directed in/out common-neighbor ranking would require an additional triplet
-density.
+density. The supported systems are `random`, `opinion`, `opinionm9`,
+`structure`, and `structurem9`. The M9 variants use finite slots: with the
+standard ten recommendations they contain one random and nine ranked slots;
+the pure variants contain ten ranked slots.

@@ -24,6 +24,7 @@ There are some concepts renamed in the preprint, including:
 │   ├── simulate/           # Simulation running scripts
 │   ├── stat/               # Statistical analysis scripts
 │   ├── plot/               # Visualization scripts
+│   ├── kinetic/            # Mesoscopic solver, CLI sweeps, and results
 │   └── config.py           # Experiment configurations
 ├── stats/                  # Statistical analysis modules
 │   ├── distance.py         # Opinion distance metrics
@@ -218,10 +219,10 @@ as the full-model analysis, with the corrected `epsilon - epsilon**2 / 4`
 random baseline for `I_h`, and supports optional reflecting diffusion.
 
 ```bash
-python -m works.solve_kinetic
-python -m works.solve_kinetic --noise 1e-5 --tag noise_1e-5 \
+python -m works.kinetic.solve_kinetic
+python -m works.kinetic.solve_kinetic --noise 1e-5 --tag noise_1e-5 \
   --output-dir kinetic_output/noise_1e-5
-python -m works.sweep_kinetic
+python -m works.kinetic.sweep_kinetic
 ```
 
 See `works/kinetic/README.md` for the closure assumptions and

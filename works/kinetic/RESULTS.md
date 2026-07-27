@@ -67,7 +67,7 @@ opinion--edge observable, not a topology-only segregation coordinate; high
 The sweep command and outputs are:
 
 ```sh
-python -m works.sweep_kinetic
+python -m works.kinetic.sweep_kinetic
 ```
 
 ```text
@@ -75,4 +75,43 @@ kinetic_output/sweep_noise_1e-5/sweep_indices.npz
 kinetic_output/sweep_noise_1e-5/summary.csv
 fig/f_kinetic_pathway_grid_noise_1e-5.{pdf,png}
 fig/f_kinetic_sweep_summary_noise_1e-5.{pdf,png}
+```
+
+## Five recommendation systems with the pair-closure structure kernel
+
+The same 8-by-8 grid was solved for Random, Opinion, OpinionM9, Structure,
+and StructureM9, again with `p=0`, `k_h=0`, `D0=1e-5`, and 4,000 steps. This
+is a 320-trajectory Python density calculation; no Go simulation is invoked.
+Pure Opinion/Structure use ten ranked slots. Their M9 counterparts use one
+Random and nine ranked slots, including the corresponding finite-slot
+eligibility probability in the rewiring term.
+
+| recommender | PbS | SbP | simultaneous | mean Iw | final Ip mean |
+|---|---:|---:|---:|---:|---:|
+| Random | 21 | 34 | 9 | 0.695 | 0.440 |
+| Opinion | 22 | 35 | 7 | 0.652 | 0.870 |
+| OpinionM9 | 22 | 35 | 7 | 0.642 | 0.872 |
+| Structure | 21 | 31 | 12 | 0.673 | 0.632 |
+| StructureM9 | 21 | 31 | 12 | 0.673 | 0.619 |
+
+Opinion recommendation is clearly separated from Random in the final
+polarization map, especially in the large-alpha part of the grid. M9 dilutes
+the opinion kernel as intended: its largest cell-wise difference from pure
+Opinion is 0.081 in `Iw`. Structure and StructureM9 are much closer in this
+particular pair closure (mean absolute `Iw` difference 0.002); their pathway
+counts agree, although basin-boundary cells can still change final
+polarization. This limited separation is itself a closure result: exact
+common-neighbor ranking needs triadic state information that is absent from
+the current opinion-bin pair density.
+
+```sh
+python -m works.kinetic.sweep_kinetic_recsys
+```
+
+```text
+kinetic_output/recsys_noise_1e-5/recsys_indices.npz
+kinetic_output/recsys_noise_1e-5/recsys_summary.csv
+kinetic_output/recsys_noise_1e-5/{random,opinion,opinionm9,structure,structurem9}/
+fig/f_kinetic_recsys_comparison_noise_1e-5.{pdf,png}
+fig/f_kinetic_pathway_grid_{recsys}_noise_1e-5.{pdf,png}
 ```

@@ -1,8 +1,8 @@
-from typing import Tuple, TypeAlias, List, Dict
+from typing import Tuple, List, Dict
+import argparse
 import os
 import pickle
 import numpy as np
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -10,9 +10,22 @@ from scipy.interpolate import interp1d
 from dataclasses import dataclass, asdict
 
 from smp_bindings import RawSimulationRecord
-from utils.plot import plt_figure, plt_save_and_close, setup_paper_params
-from stats import estimate_force_field_kde, estimate_potential_from_force
+from utils.plot import plt_figure, setup_paper_params
+from stats import estimate_force_field_kde
 import works.config as cfg
+from works.landscape.plot_utils import (
+    CMAP_NAME,
+    format_landscape_axis,
+    plot_normalized_time_colorbar,
+    plot_potential_curves,
+    potential_from_force,
+    save_landscape_figure,
+)
+from works.landscape.probe_results import (
+    LANDSCAPE_CHOICES,
+    LandscapeKind,
+    plot_probe_potential,
+)
 from works.stat.context import c
 
 CACHE_FILE_PATH = os.path.join(
@@ -20,7 +33,6 @@ CACHE_FILE_PATH = os.path.join(
                     ), "basic_data_cache.pkl"
 )
 PLOT_RES = 100
-CMAP_NAME = "managua"
 EXTRAPOLATE_FILL: float = "extrapolate"  # type: ignore
 
 
@@ -126,23 +138,26 @@ def resample_sequence(seq: np.ndarray, num_points: int) -> np.ndarray:
   )(xx)
 
 
-def compute_trajectory_differentials(
+def compute_differentials(
     r: ParsedRecord,
+    differential_sequence: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
   x_seq_resampled = resample_sequence(r.x_seq, PLOT_RES)
   t_seq_resampled = resample_sequence(r.t_seq, PLOT_RES)
-  # dx_seq = np.diff(x_seq_resampled, axis=0)
-  dx_nr_seq_resampled = resample_sequence(r.dx_nr_seq, PLOT_RES)
-  return t_seq_resampled, x_seq_resampled, dx_nr_seq_resampled
+  dx_seq_resampled = resample_sequence(differential_sequence, PLOT_RES)
+  return t_seq_resampled, x_seq_resampled, dx_seq_resampled
+
+
+def compute_trajectory_differentials(
+    r: ParsedRecord,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+  return compute_differentials(r, r.dx_nr_seq)
 
 
 def compute_neighbor_differentials(
     r: ParsedRecord,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-  x_seq_resampled = resample_sequence(r.x_seq, PLOT_RES)
-  t_seq_resampled = resample_sequence(r.t_seq, PLOT_RES)
-  dx_n_seq_resampled = resample_sequence(r.dx_n_seq, PLOT_RES)
-  return t_seq_resampled, x_seq_resampled, dx_n_seq_resampled
+  return compute_differentials(r, r.dx_n_seq)
 
 
 def seq_to_map(seq: np.ndarray, diff=False) -> np.ndarray:
@@ -200,10 +215,11 @@ def compute_segmented_potentials(
       continue
 
     F_grid = estimate_force_field_kde(x_segment, dx_segment, x_grid, h, k)
-    V_grid = estimate_potential_from_force(x_grid, F_grid)
-    if normalize_to_zero:
-      v_grid_mean = np.mean(V_grid)
-      V_grid -= v_grid_mean
+    V_grid = potential_from_force(
+        x_grid,
+        F_grid,
+        center=normalize_to_zero,
+    )
     F_segments.append(F_grid)
     V_segments.append(V_grid)
 
@@ -216,26 +232,16 @@ def compute_segmented_potentials(
 
 
 def plot_colorbar(fig: Figure, axes: List[Axes], pad=0.01):
-  norm = mpl.colors.Normalize(vmin=0, vmax=1)  # type: ignore
-  sm = plt.cm.ScalarMappable(cmap=CMAP_NAME, norm=norm)
-  sm.set_array([])
-  cbar = fig.colorbar(sm, ax=axes, orientation="vertical", aspect=30, pad=pad)
-  cbar.set_label("$t_n$")
-  return cbar
+  return plot_normalized_time_colorbar(fig, axes, pad=pad)
 
 
 def set_ax_format(ax: Axes, dt: float | str = 0.02, ylim=0.4, xlabel=True, ylabel=True):
-  ax.set_xlim(-1, 1)
-  ax.set_ylim(-ylim, ylim)
-  ax.grid(True, linestyle="--", alpha=0.5)
-  if xlabel:
-    ax.set_xlabel(r"$x_i(t)$")
-  else:
-    ax.set_xticklabels([])
-  if ylabel:
-    ax.set_ylabel(rf"$\Delta_{{{dt}}} x_i(t)$")
-  else:
-    ax.set_yticklabels([])
+  format_landscape_axis(
+      ax,
+      xlabel=r"$x_i(t)$" if xlabel else None,
+      ylabel=rf"$\Delta_{{{dt}}} x_i(t)$" if ylabel else None,
+      ylim=(-ylim, ylim),
+  )
 
 
 def plot_trajectory_map(ax: Axes, x_map: np.ndarray, t_seq: np.ndarray):
@@ -283,28 +289,25 @@ def eval_rec_dx_n_map(ax_dx: Axes, rec_parsed: ParsedRecord):
 def plot_potential_segments(
     ax: Axes, x_grid: np.ndarray, V_segments: List[np.ndarray], xlabel=True, ylabel=True
 ):
-  cmap = plt.get_cmap(CMAP_NAME)
   n_segments = len(V_segments)
-
-  for i, V in enumerate(V_segments):
-    color = cmap((i + 0.5) / n_segments)
-    ax.plot(x_grid, V, color=color, linewidth=1, alpha=0.8)
-
-  ax.set_xlim(-1, 1)
-  ax.grid(True, linestyle="--", alpha=0.5)
-
-  if xlabel:
-    ax.set_xlabel(r"$x$")
-  else:
-    ax.set_xticklabels([])
-  if ylabel:
-    ax.set_ylabel(r"$V(x)$")
-  else:
-    ax.set_yticklabels([])
+  plot_potential_curves(
+      ax,
+      x_grid,
+      V_segments,
+      (np.arange(n_segments) + 0.5) / n_segments,
+      xlabel=xlabel,
+      ylabel=ylabel,
+  )
 
 
 def plot_group(
-    recs: List[RawSimulationRecord], n_col: int, titles: List[str], save_name: str
+    recs: List[RawSimulationRecord],
+    scenario_keys: List[str],
+    n_col: int,
+    titles: List[str],
+    save_name: str,
+    *,
+    landscape: LandscapeKind,
 ):
   fig, axes_all = plt_figure(n_row=4, n_col=n_col, total_width=n_col * 3)
   axes_r1, axes_r1_v, axes_r2, axes_r2_v = axes_all
@@ -321,30 +324,54 @@ def plot_group(
     with rec:
       rec_parsed = get_basic_data(rec)
 
+    # The dynamics panels always retain the original all-agent trajectories.
     eval_rec_dx_r_map(axes_r1[i], rec_parsed)
     eval_rec_dx_n_map(axes_r2[i], rec_parsed)
 
-    x_grid_x, _, V_segments_x = compute_segmented_potentials(
-        rec_parsed, use_neighbor_diff=False, normalize_to_zero=True,
-        n_segments=10,
-    )
-    x_grid_dx, _, V_segments_dx = compute_segmented_potentials(
-        rec_parsed, use_neighbor_diff=True, normalize_to_zero=True,
-        n_segments=10,
-    )
+    if landscape == "observational":
+      x_grid_x, _, V_segments_x = compute_segmented_potentials(
+          rec_parsed, use_neighbor_diff=False, normalize_to_zero=True,
+          n_segments=10,
+      )
+      x_grid_dx, _, V_segments_dx = compute_segmented_potentials(
+          rec_parsed, use_neighbor_diff=True, normalize_to_zero=True,
+          n_segments=10,
+      )
+      plot_potential_segments(
+          axes_r1_v[i],
+          x_grid_x,
+          V_segments_x,
+          xlabel=False,
+          ylabel=(i == 0),
+      )
+      plot_potential_segments(
+          axes_r2_v[i],
+          x_grid_dx,
+          V_segments_dx,
+          xlabel=True,
+          ylabel=(i == 0),
+      )
+    else:
+      V_segments_x = plot_probe_potential(
+          axes_r1_v[i],
+          scenario_keys[i],
+          neighbor_only=False,
+          xlabel=False,
+          ylabel=(i == 0),
+      )
+      V_segments_dx = plot_probe_potential(
+          axes_r2_v[i],
+          scenario_keys[i],
+          neighbor_only=True,
+          xlabel=True,
+          ylabel=(i == 0),
+      )
 
     # Collect potential values
     for V in V_segments_x:
       all_V_x.extend(V)
     for V in V_segments_dx:
       all_V_dx.extend(V)
-
-    plot_potential_segments(
-        axes_r1_v[i], x_grid_x, V_segments_x, xlabel=False, ylabel=(i == 0)
-    )
-    plot_potential_segments(
-        axes_r2_v[i], x_grid_dx, V_segments_dx, xlabel=True, ylabel=(i == 0)
-    )
 
     char = chr(ord("a") + i)
     title = f" {titles[i]}" if i < len(titles) else ""
@@ -369,13 +396,25 @@ def plot_group(
       ax.set_ylim(v_min_dx - y_margin_dx, v_max_dx + y_margin_dx)
 
   plot_colorbar(fig, [*axes_r1, *axes_r1_v, *axes_r2, *axes_r2_v])
-  plt_save_and_close(fig, save_name)
+  save_landscape_figure(fig, save_name)
 
 
 # endregion
 
 
+def parse_args() -> argparse.Namespace:
+  parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument(
+      "--landscape",
+      choices=LANDSCAPE_CHOICES,
+      default="observational",
+      help="potential landscape estimator (default: observational)",
+  )
+  return parser.parse_args()
+
+
 if __name__ == "__main__":
+  args = parse_args()
   setup_paper_params()
 
   recs = [
@@ -385,8 +424,17 @@ if __name__ == "__main__":
 
   plot_group(
       recs[:1] + recs[3:6],
+      ["baseline", "influence", "retweet", "op_recsys"],
       4,
       ["baseline", "+influence", "+retweet", "opinion rec."],
-      "fig/f_supp_mech_map_g1",
+      "fig/landscape/f_supp_mech_map_g1",
+      landscape=args.landscape,
   )
-  plot_group(recs[6:], 5, [], "fig/f_supp_mech_map_g2")
+  plot_group(
+      recs[6:],
+      ["phase1", "phase2", "phase3", "phase4", "phase5"],
+      5,
+      [],
+      "fig/landscape/f_supp_mech_map_g2",
+      landscape=args.landscape,
+  )

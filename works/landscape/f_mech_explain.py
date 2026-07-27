@@ -6,7 +6,13 @@ from scipy.optimize import brentq
 from scipy.stats import norm
 
 from stats import adaptive_discrete_sampling
-from utils.plot import plt_figure, plt_save_and_close, setup_paper_params
+from utils.plot import plt_figure, setup_paper_params
+from works.landscape.plot_utils import (
+    format_landscape_axis,
+    potential_from_force,
+    save_landscape_figure,
+    set_shared_y_limits,
+)
 
 
 # region Integration Utilities
@@ -273,14 +279,14 @@ def err_func_float(a: float, b: float, mid: float, rate: float) -> float:
 
 
 def err_func_float_tuple(
-    l: Tuple[float, float],
-    r: Tuple[float, float],
+    left: Tuple[float, float],
+    right: Tuple[float, float],
     mid: Tuple[float, float],
     rate: float,
 ) -> float:
     return max(
-        err_func_float(l[0], r[0], mid[0], rate),
-        err_func_float(l[1], r[1], mid[1], rate),
+        err_func_float(left[0], right[0], mid[0], rate),
+        err_func_float(left[1], right[1], mid[1], rate),
     )
 
 
@@ -402,18 +408,6 @@ def get_cdf_op(
         )
 
     return cdf_op
-
-
-def naive_integrate(x: np.ndarray, sf: np.ndarray) -> np.ndarray:
-    ret = np.array(
-        [
-            integrate.trapezoid(sf[: i + 1], x[: i + 1]) if i > 0 else 0.0
-            for i in range(len(x))
-        ]
-    )
-    ret_normalizer = np.sum(ret) / len(x)
-    ret -= ret_normalizer
-    return ret
 
 
 # endregion
@@ -606,21 +600,33 @@ if __name__ == "__main__":
             cdf_div_neighbor, cdf_div_op, k_n / k, k_r / k, eps, x_axis
         )
 
-        pot_cons["Rand."][steep_cons] = naive_integrate(x_axis, x_axis - sf_cons_rand)
-        pot_cons["St."][steep_cons] = naive_integrate(x_axis, x_axis - sf_cons_st)
-        pot_cons["Op."][steep_cons] = naive_integrate(x_axis, x_axis - sf_cons_op)
+        pot_cons["Rand."][steep_cons] = potential_from_force(
+            x_axis, sf_cons_rand - x_axis
+        )
+        pot_cons["St."][steep_cons] = potential_from_force(
+            x_axis, sf_cons_st - x_axis
+        )
+        pot_cons["Op."][steep_cons] = potential_from_force(
+            x_axis, sf_cons_op - x_axis
+        )
 
-        pot_div["Rand."][steep_cons] = naive_integrate(x_axis, x_axis - sf_div_rand)
-        pot_div["St."][steep_cons] = naive_integrate(x_axis, x_axis - sf_div_st)
-        pot_div["Op."][steep_cons] = naive_integrate(x_axis, x_axis - sf_div_op)
+        pot_div["Rand."][steep_cons] = potential_from_force(
+            x_axis, sf_div_rand - x_axis
+        )
+        pot_div["St."][steep_cons] = potential_from_force(
+            x_axis, sf_div_st - x_axis
+        )
+        pot_div["Op."][steep_cons] = potential_from_force(
+            x_axis, sf_div_op - x_axis
+        )
 
     # endregion
 
     # region Potential Landscapes
 
-    pot_init_rand = naive_integrate(x_axis, x_axis - sf_init_rand)
-    pot_init_st = naive_integrate(x_axis, x_axis - sf_init_st)
-    pot_init_op = naive_integrate(x_axis, x_axis - sf_init_op)
+    pot_init_rand = potential_from_force(x_axis, sf_init_rand - x_axis)
+    pot_init_st = potential_from_force(x_axis, sf_init_st - x_axis)
+    pot_init_op = potential_from_force(x_axis, sf_init_op - x_axis)
 
     fig, axes = plt_figure(n_row=1, n_col=5, total_width=16)
     ax_init, ax_cons_1, ax_cons_2, ax_div_1, ax_div_2 = axes
@@ -653,9 +659,11 @@ if __name__ == "__main__":
     ax_div_2.set_title(r"(e5) Diverged, $\kappa=64, k_d=0.0125$", loc="left")
 
     for ax in axes:
-        ax.grid(True, linestyle="--", alpha=0.5)
-        ax.set_xlim(-1, 1)
-        ax.set_xlabel(r"$x$")
+        format_landscape_axis(
+            ax,
+            xlabel=r"$x$",
+            ylabel=r"$V(x)$" if ax is ax_init else None,
+        )
 
     # Unify y-axis across all five panels and show y ticks/label only on the leftmost axis.
     all_pots = [
@@ -675,18 +683,13 @@ if __name__ == "__main__":
         pot_div["St."][steepness_cons_values[1]],
         pot_div["Op."][steepness_cons_values[1]],
     ]
-    y_min = min(float(np.min(v)) for v in all_pots)
-    y_max = max(float(np.max(v)) for v in all_pots)
-    y_pad = 0.04 * max(y_max - y_min, 1e-9)
-    for ax in axes:
-        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+    set_shared_y_limits(axes, all_pots)
 
-    ax_init.set_ylabel(r"$V(x)$")
     ax_init.legend()
     for ax in [ax_cons_1, ax_cons_2, ax_div_1, ax_div_2]:
         ax.set_ylabel("")
         ax.tick_params(axis="y", labelleft=False)
 
-    plt_save_and_close(fig, "fig/f_mech_explain_potential")
+    save_landscape_figure(fig, "fig/landscape/f_mech_explain_potential")
 
     # endregion

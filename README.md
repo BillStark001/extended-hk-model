@@ -23,8 +23,9 @@ There are some concepts renamed in the preprint, including:
 ├── works/                  # Experiment orchestration (Python)
 │   ├── simulate/           # Simulation running scripts
 │   ├── stat/               # Statistical analysis scripts
-│   ├── plot/               # Visualization scripts
+│   ├── plot/               # General visualization scripts
 │   ├── kinetic/            # Mesoscopic solver, CLI sweeps, and results
+│   ├── landscape/          # Frozen-state counterfactual landscape probes
 │   └── config.py           # Experiment configurations
 ├── stats/                  # Statistical analysis modules
 │   ├── distance.py         # Opinion distance metrics

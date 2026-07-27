@@ -1,23 +1,28 @@
 from typing import List, Sequence
-import numpy as np
+import argparse
 import networkx as nx
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
-from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 
 from smp_bindings import RawSimulationRecord
 from utils.plot import (
     plt_figure,
-    plt_save_and_close,
     setup_paper_params,
     plot_network_snapshot,
     plot_opinion_colorbar,
 )
 import works.config as cfg
+from works.landscape.config import SCENARIOS
+from works.landscape.plot_utils import save_landscape_figure
+from works.landscape.probe_results import (
+    LANDSCAPE_CHOICES,
+    LandscapeKind,
+    plot_probe_potential,
+)
 
 # Import reusable functions from f_supp_mech_map
-from works.plot.f_supp_mech_map import (
+from works.landscape.f_supp_mech_map import (
     ParsedRecord,
     get_basic_data,
     compute_segmented_potentials,
@@ -26,8 +31,6 @@ from works.plot.f_supp_mech_map import (
     plot_potential_segments,
     set_ax_format,
     plot_colorbar,
-    CMAP_NAME,
-    PLOT_RES,
 )
 
 
@@ -99,13 +102,13 @@ def create_subplot_layout(total_width=12, height_scale=1.0):
 
 
 def plot_network_snapshots(
-    rec: RawSimulationRecord, axes: Sequence[Axes], title_prefix=""
+    rec: RawSimulationRecord,
+    axes: Sequence[Axes],
+    *,
+    active_step: int,
+    title_prefix="",
 ):
   """Plot network snapshots at different time points (row 1)"""
-  # Get active_step from cache
-  cache = globals().get("basic_data_cache", {})
-  active_step = cache.get(rec.unique_name, {}).get("active_step", rec.max_step)
-
   # Calculate snapshot time steps
   snapshot_times_normalized = [0, 0.1, 0.25, 0.5]
   snapshot_times = [int(t * active_step) for t in snapshot_times_normalized]
@@ -143,6 +146,8 @@ def plot_network_snapshots(
 def plot_dynamics_maps(
     rec_parsed: ParsedRecord,
     axes: Sequence[Axes],
+    scenario_key: str,
+    landscape: LandscapeKind,
     use_neighbor_diff=False,
     title_prefix="",
     xlabel=True,
@@ -150,7 +155,7 @@ def plot_dynamics_maps(
   """Plot dynamics maps and potentials (row 2)"""
   ax_x, ax_v_x = axes
 
-  # Plot trajectory-based differential map
+  # Keep the original all-agent trajectories for either potential estimator.
   set_ax_format(
       ax_x, xlabel=xlabel, ylabel=True, dt="F" if use_neighbor_diff else "N"
   )
@@ -159,16 +164,28 @@ def plot_dynamics_maps(
   else:
     eval_rec_dx_r_map(ax_x, rec_parsed)
 
-  # Compute and plot potentials
-  x_grid_x, _, V_segments_x = compute_segmented_potentials(
-      rec_parsed,
-      use_neighbor_diff=use_neighbor_diff,
-      normalize_to_zero=True,
-      n_segments=10,
-  )
-
-  plot_potential_segments(ax_v_x, x_grid_x, V_segments_x,
-                          xlabel=xlabel, ylabel=True)
+  if landscape == "observational":
+    x_grid_x, _, V_segments_x = compute_segmented_potentials(
+        rec_parsed,
+        use_neighbor_diff=use_neighbor_diff,
+        normalize_to_zero=True,
+        n_segments=10,
+    )
+    plot_potential_segments(
+        ax_v_x,
+        x_grid_x,
+        V_segments_x,
+        xlabel=xlabel,
+        ylabel=True,
+    )
+  else:
+    plot_probe_potential(
+        ax_v_x,
+        scenario_key,
+        neighbor_only=use_neighbor_diff,
+        xlabel=xlabel,
+        ylabel=True,
+    )
 
   # Set titles
   ax_x.set_title(
@@ -178,12 +195,28 @@ def plot_dynamics_maps(
       f"({title_prefix}') Potential of ({title_prefix})", loc="left")
 
 
-VERSION = 0
+def parse_args() -> argparse.Namespace:
+  parser = argparse.ArgumentParser(description=__doc__)
+  parser.add_argument(
+      "--version",
+      type=int,
+      choices=(0, 1),
+      default=0,
+      help="0: baseline NOD/FOD; 1: PbS/SbP comparison (default: 0)",
+  )
+  parser.add_argument(
+      "--landscape",
+      choices=LANDSCAPE_CHOICES,
+      default="observational",
+      help="potential landscape estimator (default: observational)",
+  )
+  return parser.parse_args()
 
 if __name__ == "__main__":
+  args = parse_args()
   setup_paper_params()
 
-  if VERSION == 0:
+  if args.version == 0:
     fig, axes = plt_figure(n_row=2, n_col=4, total_width=14)
     axes_r1, axes_r2 = axes
     ax_x, ax_v_x, ax_dx, ax_v_dx = axes_r2
@@ -193,23 +226,32 @@ if __name__ == "__main__":
     )
     with rec_baseline:
       rec_parsed = get_basic_data(rec_baseline)
-      plot_network_snapshots(rec_baseline, axes_r1, title_prefix="a")
+      plot_network_snapshots(
+          rec_baseline,
+          axes_r1,
+          active_step=SCENARIOS["baseline"].active_step,
+          title_prefix="a",
+      )
       plot_dynamics_maps(
           rec_parsed,
           [ax_x, ax_v_x],
+          "baseline",
+          args.landscape,
           use_neighbor_diff=False,
           title_prefix="b",
       )
       plot_dynamics_maps(
           rec_parsed,
           [ax_dx, ax_v_dx],
+          "baseline",
+          args.landscape,
           use_neighbor_diff=True,
           title_prefix="c",
       )
     plot_opinion_colorbar(fig, list(axes_r1), label="$x$")
     plot_colorbar(fig, list(axes_r2))
 
-    plt_save_and_close(fig, "fig/f_mech_map_baseline")
+    save_landscape_figure(fig, "fig/landscape/f_mech_map_baseline")
 
     exit(0)
 
@@ -228,20 +270,34 @@ if __name__ == "__main__":
   # Process data within context
   with rec_baseline_pbs:
     rec_parsed = get_basic_data(rec_baseline_pbs)
-    plot_network_snapshots(rec_baseline_pbs, axes_r1[:4], title_prefix="a")
+    plot_network_snapshots(
+        rec_baseline_pbs,
+        axes_r1[:4],
+        active_step=SCENARIOS["pbs"].active_step,
+        title_prefix="a",
+    )
     plot_dynamics_maps(
         rec_parsed,
         axes_r1[4:],
+        "pbs",
+        args.landscape,
         use_neighbor_diff=False,
         title_prefix="b",
         xlabel=False,
     )
   with rec_baseline_sbp:
     rec_parsed = get_basic_data(rec_baseline_sbp)
-    plot_network_snapshots(rec_baseline_sbp, axes_r2[:4], title_prefix="c")
+    plot_network_snapshots(
+        rec_baseline_sbp,
+        axes_r2[:4],
+        active_step=SCENARIOS["sbp"].active_step,
+        title_prefix="c",
+    )
     plot_dynamics_maps(
         rec_parsed,
         axes_r2[4:],
+        "sbp",
+        args.landscape,
         use_neighbor_diff=False,
         title_prefix="d",
     )
@@ -253,4 +309,4 @@ if __name__ == "__main__":
   plot_opinion_colorbar(fig, axes_r1[:4] + axes_r2[:4], label="$x$")
   plot_colorbar(fig, axes_r1[4:] + axes_r2[4:], pad=0.03)
 
-  plt_save_and_close(fig, "fig/f_mech_map_baseline_cmp")
+  save_landscape_figure(fig, "fig/landscape/f_mech_map_baseline_cmp")

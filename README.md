@@ -1,9 +1,8 @@
 # Extended Hegselmann-Krause Model for Social Media Echo Chamber Dynamics
 
-This repository contains the simulation code and analysis scripts for the research paper:
-**Segregation Before Polarization: How Recommendation Strategies Shape Echo Chamber Pathways**
+This repository contains the simulation code and analysis scripts for the research paper: **Segregation Before Polarization: How Recommendation Strategies Shape Echo Chamber Pathways**
 
-[[ArXiv Link](https://arxiv.org/abs/2601.16457)]
+\[[ArXiv Link](https://arxiv.org/abs/2601.16457)\]
 
 ## Overview
 
@@ -13,26 +12,21 @@ This project implements an extended discrete Bounded Confidence Model (BCM) base
 
 There are some concepts renamed in the preprint, including:
 
-- Gradation Index -> Pathway Index $I_w$
-- Environment Index -> Subjective Polarization Index $I_s$
+- Gradation Index -\> Pathway Index $`I_w`$
+- Environment Index -\> Subjective Polarization Index $`I_s`$
 
 ## Repository Structure
 
-```text
+```
 ├── (Go runtime moved to https://github.com/billstark001/social-media-models)
-├── works/                  # Experiment orchestration (Python)
-│   ├── simulate/           # Simulation running scripts
-│   ├── stat/               # Statistical analysis scripts
-│   ├── plot/               # General visualization scripts
-│   ├── kinetic/            # Mesoscopic solver, CLI sweeps, and results
-│   ├── landscape/          # Frozen-state counterfactual landscape probes
-│   └── config.py           # Experiment configurations
-├── stats/                  # Statistical analysis modules
-│   ├── distance.py         # Opinion distance metrics
-│   └── distance_c.py       # Optimized distance calculations
-├── utils/                  # General utilities
-│   ├── plot.py             # Plotting utilities
-│   └── sqlalchemy.py       # Database utilities
+├── src/ehk/                # Reusable package: infrastructure, metrics, micro adapter, models
+├── theory/                 # Mesoscopic and analytic theory tasks
+├── experiments/
+│   ├── theory_guided/      # Runtime-backed theory identification and validation
+│   └── paper/              # Paper scans, analysis, plots, and illustrations
+├── outputs/                # Generated data and figures, grouped by task and ignored by Git
+├── data/                   # Versioned fixtures and external-data manifests
+├── tests/                  # Unit, modeling, experiment, and integration tests
 └── scripts/                # Maintenance scripts
     ├── merge_db.py         # Database merging
     ├── clear_db.py         # Database cleanup
@@ -41,8 +35,7 @@ There are some concepts renamed in the preprint, including:
 
 ## Branch Migration Summary (`feat/smp-model-migration`)
 
-This branch migrated the local runtime/parsing stack to the shared
-`social-media-models` project and its Python bindings.
+This branch migrated the local runtime/parsing stack to the shared `social-media-models` project and its Python bindings.
 
 - Removed in-repo Go runtime (`ehk-model/`) and legacy parser package (`result_interp/`)
 - Simulation entry points now call `smp_bindings.simulation.run_simulations(...)`
@@ -53,19 +46,19 @@ This branch migrated the local runtime/parsing stack to the shared
 
 If you have old metadata, use the following field mapping:
 
-- `Decay` -> `Influence`
-- `RetweetRate` -> `RepostRate`
-- `TweetRetainCount` -> `PostRetainCount`
+- `Decay` -\> `Influence`
+- `RetweetRate` -\> `RepostRate`
+- `TweetRetainCount` -\> `PostRetainCount`
 - Added `DynamicsType` (default `"HK"` in this repository)
 
 ### Events Schema Naming Changes
 
 The events DB naming in SMP uses `post`/`repost` terminology:
 
-- Event type `Tweet` -> `Post`
-- Event table `tweet_events` -> `post_events`
-- Event table `view_tweets_events` -> `view_posts_events`
-- Flag `is_retweet` -> `is_repost`
+- Event type `Tweet` -\> `Post`
+- Event table `tweet_events` -\> `post_events`
+- Event table `view_tweets_events` -\> `view_posts_events`
+- Flag `is_retweet` -\> `is_repost`
 
 ## Model Architecture
 
@@ -83,26 +76,27 @@ Refer to the [paper](https://arxiv.org/abs/2601.16457) or the [repository docume
 
 1. **Clone the repository**
 
-```bash
+``` bash
 git clone https://github.com/BillStark001/extended-hk-model.git
 cd extended-hk-model
 ```
 
 2. **Install Python dependencies**
 
-```bash
+``` bash
 pip install -r requirements.txt
+pip install -e .
 ```
 
 Also install `smp_bindings` from `social-media-models`:
 
-```bash
+``` bash
 pip install git+https://github.com/billstark001/social-media-models
 ```
 
 3. **Build Go simulation engine (separate repository)**
 
-```bash
+``` bash
 git clone https://github.com/billstark001/social-media-models
 cd social-media-models
 go build -o smp .
@@ -112,7 +106,7 @@ go build -o smp .
 
 Create a `sim_ws.json` file defining workspace directories:
 
-```json
+``` json
 {
   "gradation": "/path/to/gradation/workspace",
   "epsilon": "/path/to/epsilon/workspace",
@@ -125,21 +119,25 @@ Create a `sim_ws.json` file defining workspace directories:
 
 Create a `.env` file:
 
-```bash
+``` bash
 SMP_BINARY_PATH=/absolute/path/to/social-media-models/smp
 SIMULATION_WS_PATH=/absolute/path/to/sim_ws.json
 SIMULATION_STAT_DIR=/path/to/statistics/output
 SIMULATION_INSTANCE_NAME=gradation  # or epsilon, replicate, mech
 STAT_THREAD_COUNT=6
+EHK_THEORY_MESOSCOPIC_OUTPUT_DIR=/path/to/theory/output
+EHK_SOCIAL_FORCE_INPUT_DIR=/path/to/mechanism/raw
+EHK_SOCIAL_FORCE_OUTPUT_DIR=/path/to/probe/output
 ```
+
+Every registered input or output path has the repository-local default shown in `theory/paths.py`, `experiments/paths.py`, or `experiments/paper/paths.py`; a matching environment variable can override it through `.env`.
 
 ## Migrating Existing Cache Data
 
-If your `snapshot-*.msgpack` / `events.db` were generated by the legacy runtime,
-run the migration script before analysis:
+If your `snapshot-*.msgpack` / `events.db` were generated by the legacy runtime, run the migration script before analysis:
 
-```bash
-python scripts/migrate.py /path/to/run_dir --dynamics HK
+``` bash
+python scripts/migration/migrate.py /path/to/run_dir --dynamics HK
 ```
 
 Useful options:
@@ -156,19 +154,19 @@ The script scans each direct child directory under the target path and migrates:
 
 ### Quick Start Example
 
-```bash
+``` bash
 # Run a single simulation with specific parameters (HK via SMP runtime)
 $SMP_BINARY_PATH /path/to/output '{"UniqueName":"test","DynamicsType":"HK","Tolerance":0.45,"Influence":0.05,"RewiringRate":0.05,"RepostRate":0.3,"RecsysFactoryType":"OpinionM9","RecsysCount":10,"PostRetainCount":3,"MaxSimulationStep":15000}'
 ```
 
 ### Batch Simulations
 
-Use `works/simulate.py` as the unified batch runner for all pre-configured scenarios.
+Use the paper experiment runner for all pre-configured scenarios.
 
 Basic usage:
 
-```bash
-python works/simulate.py <scenario> [--workspace <name>] [--concurrency <n>]
+``` bash
+python -m experiments.paper.run <scenario> [--workspace <name>] [--concurrency <n>]
 ```
 
 Available scenarios:
@@ -180,24 +178,24 @@ Available scenarios:
 
 Examples:
 
-```bash
+``` bash
 # Gradation study
-python works/simulate.py gradation --concurrency 6
+python -m experiments.paper.run gradation --concurrency 6
 
 # Epsilon study
-python works/simulate.py epsilon --concurrency 6
+python -m experiments.paper.run epsilon --concurrency 6
 
 # Replication study
-python works/simulate.py replicate --concurrency 8
+python -m experiments.paper.run replicate --concurrency 8
 
 # Mechanism study
-python works/simulate.py mech --concurrency 4
+python -m experiments.paper.run mech --concurrency 4
 ```
 
 Arguments:
 
 - `scenario` (required): one of `gradation`, `epsilon`, `replicate`, `mech`
-- `--workspace` (optional): workspace key resolved by `works/config.py` and `sim_ws.json`
+- `--workspace` (optional): workspace key resolved from `sim_ws.json`
 - `--concurrency` (optional, default: `4`): max number of concurrent simulations
 
 ### Simulation Output
@@ -213,21 +211,15 @@ Each simulation produces:
 
 ### Mesoscopic density solver
 
-The independent Python solver under `works/kinetic/` evolves opinion density,
-conditional opinion velocity, and directed edge density without reposts or
-historical posts. It uses the same `I_p`, `I_h`, `I_s`, and `I_w` definitions
-as the full-model analysis, with the corrected `epsilon - epsilon**2 / 4`
-random baseline for `I_h`, and supports optional reflecting diffusion.
+The independent Python solver under `theory/mesoscopic/` uses the reusable model in `src/ehk/modeling/mesoscopic/` to evolve opinion density, conditional opinion velocity, and directed edge density without reposts or historical posts. It uses the same `I_p`, `I_h`, `I_s`, and `I_w` definitions as the full-model analysis, with the corrected `epsilon - epsilon**2 / 4` random baseline for `I_h`, and supports optional reflecting diffusion.
 
-```bash
-python -m works.kinetic.solve_kinetic
-python -m works.kinetic.solve_kinetic --noise 1e-5 --tag noise_1e-5 \
-  --output-dir kinetic_output/noise_1e-5
-python -m works.kinetic.sweep_kinetic
+``` bash
+python -m theory.mesoscopic.single_run
+python -m theory.mesoscopic.single_run --noise 1e-5 --tag noise_1e-5
+python -m theory.mesoscopic.phase_scan
 ```
 
-See `works/kinetic/README.md` for the closure assumptions and
-`works/kinetic/RESULTS.md` for the initial PbS/SbP results.
+See `theory/mesoscopic/README.md` for the closure assumptions and `theory/mesoscopic/RESULTS.md` for the initial PbS/SbP results.
 
 ### Event Database Schema
 
@@ -239,7 +231,7 @@ The event database tracks three event types:
 
 ### Analysis Scripts
 
-```python
+``` python
 # Load and analyze simulation results
 from smp_bindings import load_events_db, get_events_by_step_range
 
@@ -247,20 +239,13 @@ db = load_events_db("path/to/events.db")
 events = get_events_by_step_range(db, 0, 1000, type_="Rewiring")
 
 # Calculate opinion polarization metrics
-from stats.distance import calculate_polarization
-polarization = calculate_polarization(opinions)
-```
-
-### Visualization
-
-```python
-from utils.plot import plot_opinion_evolution
-plot_opinion_evolution(opinion_time_series, save_path='evolution.png')
+from ehk.metrics.polarization import DistanceCalculator
+polarization = DistanceCalculator(sample_count=len(opinions)).calculate(graph, opinions)
 ```
 
 ## Experimental Configurations
 
-The `works/config.py` file defines all experimental scenarios:
+The `experiments/paper/scenarios.py` module defines the paper scenarios, while reusable metadata construction lives in `ehk.micro.scenarios`:
 
 - **all_scenarios_grad**: 10 simulations × 8 rewiring rates × 8 decay rates × 4 retweet rates × 4 recommendation systems
 - **all_scenarios_eps**: 100 simulations × 16 tolerance values
@@ -275,7 +260,7 @@ Follow these steps to create a custom recommendation system:
 
 **Step 1:** Implement the `HKModelRecommendationSystem` interface in Go:
 
-```go
+``` go
 type CustomRecsys struct {
     model.BaseRecommendationSystem
     Model *model.HKModel
@@ -289,7 +274,7 @@ func (r *CustomRecsys) Recommend(agent *model.HKAgent, neighborIDs map[int64]boo
 
 **Step 2:** Register in `simulation/scenario-metadata.go`:
 
-```go
+``` go
 RECSYS_FACTORY["CustomType"] = func(m *model.HKModel) model.HKModelRecommendationSystem {
     return NewCustomRecsys(m)
 }
@@ -303,7 +288,7 @@ Edit the HK dynamics implementation in the `social-media-models` repository if y
 
 If you use this code in your research, please cite:
 
-```bibtex
+``` bibtex
 @misc{zhao2026segregation,
     title={Segregation Before Polarization: How Recommendation Strategies Shape Echo Chamber Pathways}, 
     author={Junning Zhao and Kazutoshi Sasahara and Yu Chen},

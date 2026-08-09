@@ -123,6 +123,7 @@ celerybeat.pid
 .env
 .venv
 .env.*
+!.env.example
 sim_ws.json
 
 # Spyder project settings
@@ -159,11 +160,8 @@ cython_debug/
 # project related
 **/.DS_Store
 nohup.out
-run**
-fig**
-fig_**
-run_**
-kinetic_output/
+run*/
+outputs/
 
 # cache files
 basic_data_cache.pkl

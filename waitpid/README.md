@@ -12,7 +12,7 @@ waitpid blocks until a target PID exits, then runs a follow-up command. It is us
 
 ## Usage
 
-```bash
+``` bash
 go run . -- 12345 python main.py
 go run . --poll 1s 12345 ./build.sh --fast
 go run . --shell --timeout 60s 12345 "echo done && dir"

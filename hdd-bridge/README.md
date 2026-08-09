@@ -12,7 +12,7 @@ hdd-bridge watches a fast source directory, finds completed simulation folders, 
 
 ## Usage
 
-```bash
+``` bash
 go run . --src D:/sim-cache --dst E:/sim-archive
 go run . --src D:/sim-cache --dst E:/sim-archive --interval 30s --minelapsed 2m
 go run . --src D:/sim-cache --dst E:/sim-archive --buffer-mib 8 --fsync

@@ -11,12 +11,15 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import shlex
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
+from matplotlib.patches import Rectangle
 import numpy as np
 
 from ehk.common.plotting import setup_paper_params
@@ -31,6 +34,7 @@ from theory.mesoscopic.phase_scan import (
     _save_data,
     _solve_case,
 )
+from theory.mesoscopic.cli_utils import write_run_metadata
 from theory.paths import MESOSCOPIC_OUTPUT
 
 
@@ -41,6 +45,13 @@ RECOMMENDERS = (
     "structure",
     "structurem9",
 )
+DISPLAY_NAMES = {
+    "random": "Random",
+    "opinion": "Opinion",
+    "opinionm9": "OpinionM9",
+    "structure": "Structure",
+    "structurem9": "StructureM9",
+}
 
 
 def _solve_recommender_case(
@@ -68,7 +79,6 @@ def _precedence(arrays: dict[str, np.ndarray]) -> np.ndarray:
 
 
 def _comparison_heatmap(
-    fig,
     axis,
     values: np.ndarray,
     title: str,
@@ -77,22 +87,33 @@ def _comparison_heatmap(
     vmin: float | None = None,
     vmax: float | None = None,
     norm=None,
+    show_x: bool = True,
+    show_y: bool = True,
 ):
+    color_map = plt.get_cmap(cmap).copy()
+    color_map.set_bad("#e6e6e6")
     image = axis.imshow(
-        values,
+        np.ma.masked_invalid(values),
         origin="lower",
         aspect="equal",
-        cmap=cmap,
+        cmap=color_map,
         vmin=vmin,
         vmax=vmax,
         norm=norm,
     )
-    axis.set_xticks(np.arange(RATES.size), labels=[f"{value:g}" for value in RATES])
-    axis.set_yticks(np.arange(RATES.size), labels=[f"{value:g}" for value in RATES])
-    axis.tick_params(axis="x", labelrotation=90, labelsize=7)
-    axis.tick_params(axis="y", labelsize=7)
-    axis.set_xlabel(r"influence $\alpha$", fontsize=8)
-    axis.set_ylabel(r"rewiring $q$", fontsize=8)
+    rate_labels = [f"{value:g}" for value in RATES]
+    axis.set_xticks(
+        np.arange(RATES.size), labels=rate_labels if show_x else []
+    )
+    axis.set_yticks(
+        np.arange(RATES.size), labels=rate_labels if show_y else []
+    )
+    axis.tick_params(
+        axis="x", labelrotation=90, labelsize=7, length=2
+    )
+    axis.tick_params(axis="y", labelsize=7, length=2)
+    if show_x:
+        axis.set_xlabel(r"influence $\alpha$", fontsize=8)
     axis.set_title(title, fontsize=9)
     return image
 
@@ -100,7 +121,6 @@ def _comparison_heatmap(
 def _plot_comparison(
     arrays_by_recsys: dict[str, dict[str, np.ndarray]],
     figure_path: Path,
-    base: KineticParameters,
 ) -> None:
     """Plot shared-scale outcomes, with systems aligned in columns."""
 
@@ -108,7 +128,7 @@ def _plot_comparison(
     fig, axes = plt.subplots(
         3,
         len(RECOMMENDERS),
-        figsize=(15, 8.5),
+        figsize=(12.2, 6.8),
         constrained_layout=True,
     )
     figures = []
@@ -116,35 +136,54 @@ def _plot_comparison(
         arrays = arrays_by_recsys[recsys]
         figures.append(
             _comparison_heatmap(
-                fig,
                 axes[0, column],
                 arrays["I_w"],
-                recsys,
+                DISPLAY_NAMES[recsys],
                 "coolwarm",
                 vmin=0,
                 vmax=1,
+                show_x=False,
+                show_y=column == 0,
             )
         )
         _comparison_heatmap(
-            fig,
             axes[1, column],
             _precedence(arrays),
             "",
             "RdBu_r",
             norm=TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1),
+            show_x=False,
+            show_y=column == 0,
         )
         _comparison_heatmap(
-            fig,
             axes[2, column],
             arrays["I_p"][:, :, -1],
             "",
             "magma",
             vmin=0,
             vmax=1,
+            show_x=True,
+            show_y=column == 0,
         )
-    axes[0, 0].set_ylabel(r"rewiring $q$\npathway $I_w$", fontsize=8)
-    axes[1, 0].set_ylabel(r"rewiring $q$\nfirst-passage order", fontsize=8)
-    axes[2, 0].set_ylabel(r"rewiring $q$\nfinal $I_p$", fontsize=8)
+    axes[0, 0].set_ylabel(r"pathway $I_w$" + "\n" + r"rewiring $q$", fontsize=8)
+    axes[1, 0].set_ylabel("first-passage order\n" + r"rewiring $q$", fontsize=8)
+    axes[2, 0].set_ylabel(r"final $I_p$" + "\n" + r"rewiring $q$", fontsize=8)
+    # alpha=1 is a discrete copying/remapping limit, not a controlled
+    # continuous-time point.  Hatch that column so the distinction survives
+    # grayscale printing and does not rely on the caption alone.
+    for axis in axes.ravel():
+        axis.add_patch(
+            Rectangle(
+                (RATES.size - 1.5, -0.5),
+                1,
+                RATES.size,
+                fill=False,
+                hatch="////",
+                edgecolor="0.25",
+                linewidth=0.45,
+                alpha=0.45,
+            )
+        )
     fig.colorbar(figures[0], ax=axes[0, :], shrink=0.85, label=r"$I_w$")
     order_scalar = plt.cm.ScalarMappable(
         cmap="RdBu_r", norm=TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
@@ -163,11 +202,6 @@ def _plot_comparison(
         shrink=0.85,
         label=r"final $I_p$",
     )
-    fig.suptitle(
-        r"Mesoscopic recommendation comparison "
-        rf"($p=0$, $k_h=0$, $D_0={base.noise_diffusion:g}$)",
-        fontsize=14,
-    )
     for suffix in (".pdf", ".png"):
         fig.savefig(figure_path.with_suffix(suffix), dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -182,7 +216,9 @@ def _write_combined_summary(
         "I_p_final", "I_h_final", "I_s_final",
     )
     with output_path.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer = csv.DictWriter(
+            file, fieldnames=fieldnames, lineterminator="\n"
+        )
         writer.writeheader()
         for recsys in RECOMMENDERS:
             for result in sorted(
@@ -222,6 +258,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--figure-dir", type=Path, default=output_root / "figures")
     parser.add_argument("--tag", default="noise_1e-5")
+    parser.add_argument(
+        "--skip-plots",
+        action="store_true",
+        help="write numerical outputs without regenerating figures",
+    )
     return parser.parse_args()
 
 
@@ -270,15 +311,16 @@ def main() -> None:
         params = replace(base, recsys=recsys)
         output_dir = args.output_dir / recsys
         _save_data(results_by_recsys[recsys], arrays, output_dir, params)
-        _plot_path_grid(
-            arrays,
-            args.figure_dir / f"f_kinetic_pathway_grid_{recsys}_{args.tag}",
-            params,
-        )
-        _plot_summary(
-            arrays,
-            args.figure_dir / f"f_kinetic_sweep_summary_{recsys}_{args.tag}",
-        )
+        if not args.skip_plots:
+            _plot_path_grid(
+                arrays,
+                args.figure_dir / f"f_kinetic_pathway_grid_{recsys}_{args.tag}",
+                params,
+            )
+            _plot_summary(
+                arrays,
+                args.figure_dir / f"f_kinetic_sweep_summary_{recsys}_{args.tag}",
+            )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_combined_summary(
         results_by_recsys, args.output_dir / "recsys_summary.csv"
@@ -294,12 +336,29 @@ def main() -> None:
             for name, values in arrays.items()
         },
     )
-    args.figure_dir.mkdir(parents=True, exist_ok=True)
-    _plot_comparison(
-        arrays_by_recsys,
-        args.figure_dir / f"f_kinetic_recsys_comparison_{args.tag}",
-        base,
+    write_run_metadata(
+        args.output_dir / "run_metadata.json",
+        analysis="five-recommender mesoscopic scan",
+        command=shlex.join(
+            [sys.executable, "-m", "theory.mesoscopic.recommender_scan", *sys.argv[1:]]
+        ),
+        parameters=asdict(base),
+        configuration={
+            "rates": RATES.tolist(),
+            "recommenders": list(RECOMMENDERS),
+            "jobs": args.jobs,
+            "skip_plots": args.skip_plots,
+            "output_dir": str(args.output_dir.resolve()),
+            "figure_dir": str(args.figure_dir.resolve()),
+            "tag": args.tag,
+        },
     )
+    if not args.skip_plots:
+        args.figure_dir.mkdir(parents=True, exist_ok=True)
+        _plot_comparison(
+            arrays_by_recsys,
+            args.figure_dir / f"f_kinetic_recsys_comparison_{args.tag}",
+        )
     print(f"five-system mesoscopic sweep data written to {args.output_dir}")
 
 

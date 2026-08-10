@@ -12,8 +12,10 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import shlex
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -26,7 +28,11 @@ from ehk.modeling.mesoscopic import (
     KineticParameters,
     solve,
 )
-from theory.mesoscopic.cli_utils import first_crossing_or_nan, pathway_label
+from theory.mesoscopic.cli_utils import (
+    first_crossing_or_nan,
+    pathway_label,
+    write_run_metadata,
+)
 from theory.paths import MESOSCOPIC_OUTPUT
 
 
@@ -139,7 +145,9 @@ def _save_data(
     with (output_dir / "summary.csv").open(
         "w", newline="", encoding="utf-8"
     ) as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer = csv.DictWriter(
+            file, fieldnames=fieldnames, lineterminator="\n"
+        )
         writer.writeheader()
         for result in sorted(
             results, key=lambda item: (item.q_index, item.alpha_index)
@@ -344,6 +352,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--figure-dir", type=Path, default=output_root / "figures")
     parser.add_argument("--tag", default="noise_1e-5")
+    parser.add_argument(
+        "--skip-plots",
+        action="store_true",
+        help="write numerical outputs without regenerating figures",
+    )
     return parser.parse_args()
 
 
@@ -385,16 +398,33 @@ def main() -> None:
 
     arrays = _result_arrays(results)
     _save_data(results, arrays, args.output_dir, base)
-    args.figure_dir.mkdir(parents=True, exist_ok=True)
-    _plot_path_grid(
-        arrays,
-        args.figure_dir / f"f_kinetic_pathway_grid_{args.tag}",
-        base,
+    write_run_metadata(
+        args.output_dir / "run_metadata.json",
+        analysis="single-recommender mesoscopic scan",
+        command=shlex.join(
+            [sys.executable, "-m", "theory.mesoscopic.phase_scan", *sys.argv[1:]]
+        ),
+        parameters=asdict(base),
+        configuration={
+            "rates": RATES.tolist(),
+            "jobs": args.jobs,
+            "skip_plots": args.skip_plots,
+            "output_dir": str(args.output_dir.resolve()),
+            "figure_dir": str(args.figure_dir.resolve()),
+            "tag": args.tag,
+        },
     )
-    _plot_summary(
-        arrays,
-        args.figure_dir / f"f_kinetic_sweep_summary_{args.tag}",
-    )
+    if not args.skip_plots:
+        args.figure_dir.mkdir(parents=True, exist_ok=True)
+        _plot_path_grid(
+            arrays,
+            args.figure_dir / f"f_kinetic_pathway_grid_{args.tag}",
+            base,
+        )
+        _plot_summary(
+            arrays,
+            args.figure_dir / f"f_kinetic_sweep_summary_{args.tag}",
+        )
     print(f"mesoscopic sweep data written to {args.output_dir}")
 
 

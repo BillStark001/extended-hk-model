@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy.stats import norm
 
 from ehk.metrics.homophily import normalize_homophily
@@ -36,11 +37,16 @@ def _js_distance(p: FloatArray, q: FloatArray, axis: FloatArray) -> float:
     return float(np.sqrt(max(_fast_trapz(integrand, axis), 0.0)))
 
 
-def _distance_mass(pair_mass: FloatArray) -> FloatArray:
+def _distance_mass(
+    pair_mass: FloatArray,
+    distance_bins: NDArray[np.int64] | None = None,
+) -> FloatArray:
     size = pair_mass.shape[0]
-    i, j = np.indices(pair_mass.shape)
+    if distance_bins is None:
+        bins = np.arange(size)
+        distance_bins = np.abs(bins[:, None] - bins[None, :]).ravel()
     result = np.bincount(
-        np.abs(i - j).ravel(),
+        distance_bins,
         weights=pair_mass.ravel(),
         minlength=size,
     ).astype(float)
@@ -79,12 +85,21 @@ class _DensityIndexCalculator:
         self.x = x
         self.epsilon = epsilon
         self.mean_degree = mean_degree
-        self.distance_axis = np.linspace(0.0, 2.0, 256)
-        self.distances = np.arange(x.size, dtype=float) * (x[1] - x[0])
         self.minimum_bandwidth = 0.01
+        # Match the microscopic DistanceCalculator: four minimum-bandwidths
+        # beyond each physical endpoint retain the boundary KDE tails.
+        error_range = 4 * self.minimum_bandwidth
+        self.distance_axis = np.linspace(-error_range, 2 + error_range, 256)
+        self.distances = np.arange(x.size, dtype=float) * (x[1] - x[0])
+        bins = np.arange(x.size)
+        self.distance_bins = np.abs(
+            bins[:, None] - bins[None, :]
+        ).ravel()
 
         uniform = np.full(x.size, 1 / x.size)
-        random_mass = _distance_mass(np.outer(uniform, uniform))
+        random_mass = _distance_mass(
+            np.outer(uniform, uniform), self.distance_bins
+        )
         random_bw = _bandwidth(
             self.distances,
             random_mass,
@@ -114,8 +129,12 @@ class _DensityIndexCalculator:
         rho: FloatArray,
         edge: FloatArray,
     ) -> tuple[float, float, float, float, float]:
-        objective_mass = _distance_mass(np.outer(rho, rho))
-        subjective_mass = _distance_mass(edge / self.mean_degree)
+        objective_mass = _distance_mass(
+            np.outer(rho, rho), self.distance_bins
+        )
+        subjective_mass = _distance_mass(
+            edge / self.mean_degree, self.distance_bins
+        )
 
         objective_bw = _bandwidth(
             self.distances,

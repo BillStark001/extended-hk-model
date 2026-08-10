@@ -25,6 +25,7 @@ from scipy import sparse
 
 
 FloatArray = NDArray[np.float64]
+BoolArray = NDArray[np.bool_]
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,41 @@ class KineticParameters:
     record_every: int = 5
 
     def validate(self) -> None:
+        continuous = {
+            "epsilon": self.epsilon,
+            "influence": self.influence,
+            "rewiring": self.rewiring,
+            "mean_degree": self.mean_degree,
+            "random_mix": self.random_mix,
+            "opinion_bandwidth": self.opinion_bandwidth,
+            "noise_diffusion": self.noise_diffusion,
+            "dt": self.dt,
+        }
+        nonfinite = [
+            name for name, value in continuous.items()
+            if not np.isfinite(value)
+        ]
+        if nonfinite:
+            raise ValueError(
+                "continuous parameters must be finite: "
+                + ", ".join(nonfinite)
+            )
+        integer_parameters = {
+            "grid_size": self.grid_size,
+            "recsys_count": self.recsys_count,
+            "steps": self.steps,
+            "record_every": self.record_every,
+        }
+        invalid_integers = [
+            name for name, value in integer_parameters.items()
+            if isinstance(value, (bool, np.bool_))
+            or not isinstance(value, (int, np.integer))
+        ]
+        if invalid_integers:
+            raise ValueError(
+                "count parameters must be integers: "
+                + ", ".join(invalid_integers)
+            )
         if self.grid_size < 11 or self.grid_size % 2 == 0:
             raise ValueError("grid_size must be an odd integer >= 11")
         if not 0 < self.epsilon <= 2:
@@ -64,6 +100,10 @@ class KineticParameters:
             raise ValueError("rewiring must be in [0, 1]")
         if self.mean_degree <= 0 or self.recsys_count <= 0:
             raise ValueError("mean_degree and recsys_count must be positive")
+        if not float(self.mean_degree).is_integer():
+            raise ValueError(
+                "mean_degree must be an integer in the fixed-out-degree closure"
+            )
         if not 0 <= self.random_mix <= 1:
             raise ValueError("random_mix must be in [0, 1]")
         if self.opinion_bandwidth <= 0:
@@ -72,6 +112,10 @@ class KineticParameters:
             raise ValueError("noise_diffusion must be non-negative")
         if self.dt <= 0 or self.steps < 1 or self.record_every < 1:
             raise ValueError("dt, steps, and record_every must be positive")
+        if self.dt * self.influence > 1 + 1e-12:
+            raise ValueError("dt * influence must not exceed 1")
+        if self.dt * self.rewiring > 1 + 1e-12:
+            raise ValueError("dt * rewiring must not exceed 1")
         if self.recsys.casefold() not in {
             "random", "rand", "opinion", "op", "structure", "st",
             "opinionm9", "structurem9",
@@ -93,6 +137,30 @@ class KineticTrajectory:
         return asdict(self.parameters)
 
 
+@dataclass(frozen=True)
+class _GridOperators:
+    """Time-independent grid arrays reused by every solver step."""
+
+    delta: FloatArray
+    concordant: BoolArray
+    opinion_score: FloatArray | None
+
+
+def _build_grid_operators(
+    params: KineticParameters,
+    x: FloatArray,
+) -> _GridOperators:
+    delta = x[None, :] - x[:, None]
+    concordant = np.abs(delta) <= params.epsilon
+    if params.recsys.casefold() in {"opinion", "opinionm9", "op"}:
+        opinion_score = np.exp(
+            -0.5 * (delta / params.opinion_bandwidth) ** 2
+        )
+    else:
+        opinion_score = None
+    return _GridOperators(delta, concordant, opinion_score)
+
+
 def _row_normalize(values: FloatArray, fallback: FloatArray) -> FloatArray:
     result = np.maximum(values, 0.0)
     row_sum = result.sum(axis=1, keepdims=True)
@@ -107,7 +175,7 @@ def _conditional_neighbors(
     edge: FloatArray,
     mean_degree: float,
 ) -> FloatArray:
-    fallback = np.broadcast_to(rho, edge.shape).copy()
+    fallback = np.broadcast_to(rho, edge.shape)
     denominator = mean_degree * rho[:, None]
     neighbors = np.divide(
         edge,
@@ -123,6 +191,7 @@ def _recommendation_channels(
     x: FloatArray,
     rho: FloatArray,
     neighbors: FloatArray,
+    opinion_score: FloatArray | None = None,
 ) -> tuple[FloatArray, FloatArray, int, int]:
     """Return random/core kernels and their finite recommendation-slot counts.
 
@@ -136,14 +205,16 @@ def _recommendation_channels(
     when ``RecsysCount=10`` and ``random_mix=0.1``.
     """
 
-    random_kernel = np.broadcast_to(rho, (x.size, x.size)).copy()
+    random_kernel = np.broadcast_to(rho, (x.size, x.size))
     recsys = params.recsys.casefold()
     if recsys in {"random", "rand"}:
         return random_kernel, random_kernel, params.recsys_count, 0
 
     if recsys in {"opinion", "opinionm9", "op"}:
-        delta = x[None, :] - x[:, None]
-        score = np.exp(-0.5 * (delta / params.opinion_bandwidth) ** 2)
+        score = opinion_score
+        if score is None:
+            delta = x[None, :] - x[:, None]
+            score = np.exp(-0.5 * (delta / params.opinion_bandwidth) ** 2)
         core = _row_normalize(score * rho[None, :], random_kernel)
     elif recsys in {"structure", "structurem9", "st"}:
         # Expected overlap of the two endpoints' outgoing neighborhoods.
@@ -184,20 +255,30 @@ def _compute_fields(
     x: FloatArray,
     rho: FloatArray,
     edge: FloatArray,
+    operators: _GridOperators | None = None,
 ) -> tuple[FloatArray, FloatArray]:
     """Compute opinion velocity and the rewiring gain/loss field."""
+
+    if operators is None:
+        operators = _build_grid_operators(params, x)
 
     k = params.mean_degree
     neighbors = _conditional_neighbors(rho, edge, k)
     random_kernel, core_kernel, random_slots, core_slots = (
-        _recommendation_channels(params, x, rho, neighbors)
+        _recommendation_channels(
+            params,
+            x,
+            rho,
+            neighbors,
+            opinion_score=operators.opinion_score,
+        )
     )
     recommendations = (
         random_slots * random_kernel + core_slots * core_kernel
     ) / params.recsys_count
 
-    delta = x[None, :] - x[:, None]
-    concordant = np.abs(delta) <= params.epsilon
+    delta = operators.delta
+    concordant = operators.concordant
     visible_mass = k * neighbors + params.recsys_count * recommendations
     denominator = np.sum(concordant * visible_mass, axis=1)
     numerator = np.sum(concordant * delta * visible_mass, axis=1)
@@ -321,23 +402,42 @@ def _apply_markov_transport(
     return rho_next, edge_next
 
 
-def _repair_state(
+def _validate_state(
     rho: FloatArray,
     edge: FloatArray,
     mean_degree: float,
+    tolerance: float = 1e-10,
 ) -> tuple[FloatArray, FloatArray]:
-    rho = np.maximum(np.asarray(rho, dtype=float), 0.0)
-    rho_sum = rho.sum()
-    if rho_sum <= 0:
-        raise FloatingPointError("opinion mass vanished")
-    rho /= rho_sum
+    """Reject material invariant violations; remove only negative roundoff.
 
-    edge = np.maximum(np.asarray(edge, dtype=float), 0.0)
-    desired_rows = mean_degree * rho
-    rows = edge.sum(axis=1)
-    valid = rows > 1e-15
-    edge[valid] *= (desired_rows[valid] / rows[valid])[:, None]
-    edge[~valid] = desired_rows[~valid, None] * rho[None, :]
+    The transport and one-for-one rewiring operators conserve mass and fixed
+    out-degree algebraically. Projecting every step back onto those invariants
+    can conceal an unstable time step, so this routine never renormalizes or
+    rescales rows.
+    """
+
+    rho = np.asarray(rho, dtype=float)
+    edge = np.asarray(edge, dtype=float)
+    if not np.all(np.isfinite(rho)) or not np.all(np.isfinite(edge)):
+        raise FloatingPointError("mesoscopic state contains non-finite values")
+    if float(rho.min()) < -tolerance or float(edge.min()) < -tolerance:
+        raise FloatingPointError("mesoscopic update produced negative mass")
+    if np.any(rho < 0):
+        rho = rho.copy()
+        rho[rho < 0] = 0.0
+    if np.any(edge < 0):
+        edge = edge.copy()
+        edge[edge < 0] = 0.0
+
+    mass_error = abs(float(rho.sum()) - 1.0)
+    row_error = float(
+        np.max(np.abs(edge.sum(axis=1) - mean_degree * rho))
+    )
+    if mass_error > tolerance or row_error > tolerance:
+        raise FloatingPointError(
+            "mesoscopic update violated mass/out-degree invariants: "
+            f"mass_error={mass_error:.3e}, row_error={row_error:.3e}"
+        )
     return rho, edge
 
 
@@ -349,6 +449,7 @@ def solve(params: KineticParameters) -> KineticTrajectory:
     dx = x[1] - x[0]
     rho = np.full(params.grid_size, 1 / params.grid_size, dtype=float)
     edge = params.mean_degree * np.outer(rho, rho)
+    operators = _build_grid_operators(params, x)
 
     record_steps = list(range(0, params.steps + 1, params.record_every))
     if record_steps[-1] != params.steps:
@@ -362,7 +463,9 @@ def solve(params: KineticParameters) -> KineticTrajectory:
     fluxes: list[FloatArray] = []
 
     def record(step: int) -> None:
-        velocity, flux = _compute_fields(params, x, rho, edge)
+        velocity, flux = _compute_fields(
+            params, x, rho, edge, operators=operators
+        )
         times.append(step * params.dt)
         rhos.append(rho.copy())
         velocities.append(velocity.copy())
@@ -371,18 +474,18 @@ def solve(params: KineticParameters) -> KineticTrajectory:
 
     record(0)
 
-    diffusion_matrices: list[sparse.csr_matrix] = []
+    diffusion_matrix: sparse.csr_matrix | None = None
+    diffusion_substeps = 0
     if params.noise_diffusion > 0:
         total_ratio = params.noise_diffusion * params.dt / (dx * dx)
-        n_substeps = max(1, int(np.ceil(total_ratio / 0.45)))
-        ratio = total_ratio / n_substeps
-        diffusion_matrices = [
-            _diffusion_matrix(params.grid_size, ratio)
-            for _ in range(n_substeps)
-        ]
+        diffusion_substeps = max(1, int(np.ceil(total_ratio / 0.45)))
+        ratio = total_ratio / diffusion_substeps
+        diffusion_matrix = _diffusion_matrix(params.grid_size, ratio)
 
     for step in range(1, params.steps + 1):
-        velocity, rewiring_flux = _compute_fields(params, x, rho, edge)
+        velocity, rewiring_flux = _compute_fields(
+            params, x, rho, edge, operators=operators
+        )
 
         # Both processes use the old state, matching the synchronous
         # microscopic update to first order in dt.
@@ -391,9 +494,12 @@ def solve(params: KineticParameters) -> KineticTrajectory:
         rho, edge = _apply_markov_transport(
             transition, rho, edge_with_rewiring
         )
-        for diffusion in diffusion_matrices:
-            rho, edge = _apply_markov_transport(diffusion, rho, edge)
-        rho, edge = _repair_state(rho, edge, params.mean_degree)
+        if diffusion_matrix is not None:
+            for _ in range(diffusion_substeps):
+                rho, edge = _apply_markov_transport(
+                    diffusion_matrix, rho, edge
+                )
+        rho, edge = _validate_state(rho, edge, params.mean_degree)
 
         if step in record_set:
             record(step)

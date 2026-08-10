@@ -7,7 +7,9 @@ from ehk.modeling.mesoscopic import KineticParameters, solve
 from ehk.modeling.mesoscopic.solver import (
     _recommendation_channels,
     _recommendation_kernel,
+    _validate_state,
 )
+from ehk.metrics.density_indices import _DensityIndexCalculator
 from ehk.metrics.homophily import uniform_concordance_probability
 
 
@@ -51,6 +53,29 @@ class KineticSolverTests(unittest.TestCase):
         self.assertGreaterEqual(float(trajectory.rho.min()), 0.0)
         self.assertGreaterEqual(float(trajectory.edge.min()), 0.0)
         np.testing.assert_allclose(trajectory.rho.sum(axis=1), 1.0, atol=1e-12)
+
+    def test_invalid_explicit_time_step_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "dt \\* rewiring"):
+            solve(KineticParameters(dt=2.0, rewiring=0.75))
+
+    def test_nonfinite_and_noninteger_parameters_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "must be finite"):
+            solve(KineticParameters(noise_diffusion=float("nan")))
+        with self.assertRaisesRegex(ValueError, "must be integers"):
+            solve(KineticParameters(grid_size=81.0))
+
+    def test_invariant_check_does_not_project_material_errors(self):
+        rho = np.asarray([0.5, 0.5])
+        edge = np.asarray([[4.0, 3.0], [3.0, 4.5]])
+        with self.assertRaisesRegex(FloatingPointError, "invariants"):
+            _validate_state(rho, edge, mean_degree=15.0)
+
+    def test_density_kde_axis_retains_boundary_tails(self):
+        calculator = _DensityIndexCalculator(
+            np.linspace(-1.0, 1.0, 31), epsilon=0.45, mean_degree=15.0
+        )
+        self.assertLess(float(calculator.distance_axis[0]), 0.0)
+        self.assertGreater(float(calculator.distance_axis[-1]), 2.0)
 
     def test_uniform_initial_state_has_zero_normalized_indices(self):
         trajectory = solve(

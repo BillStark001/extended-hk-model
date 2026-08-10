@@ -214,7 +214,9 @@ def _write_summary(results: list[ScenarioResult], output_dir: Path) -> None:
         "rho_epsilon_final",
     ]
     with (output_dir / "summary.csv").open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer = csv.DictWriter(
+            file, fieldnames=fieldnames, lineterminator="\n"
+        )
         writer.writeheader()
         for result in results:
             params = result.trajectory.parameters

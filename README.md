@@ -211,15 +211,19 @@ Each simulation produces:
 
 ### Mesoscopic density solver
 
-The independent Python solver under `theory/mesoscopic/` uses the reusable model in `src/ehk/modeling/mesoscopic/` to evolve opinion density, conditional opinion velocity, and directed edge density without reposts or historical posts. It uses the same `I_p`, `I_h`, `I_s`, and `I_w` definitions as the full-model analysis, with the corrected `epsilon - epsilon**2 / 4` random baseline for `I_h`, and supports optional reflecting diffusion.
+The independent Python solver under `theory/mesoscopic/` uses the reusable model in `src/ehk/modeling/mesoscopic/` to evolve opinion density, conditional opinion velocity, and directed edge density without reposts or historical posts. It rejects material invariant errors rather than projecting them away (only sub-tolerance negative roundoff is zeroed), retains KDE tails at the physical distance boundaries, linearly interpolates threshold crossings, and writes source-hashed run metadata. It supports Random, Opinion, OpinionM9, Structure, and StructureM9 pair-closure kernels plus optional reflecting diffusion.
 
 ``` bash
 python -m theory.mesoscopic.single_run
 python -m theory.mesoscopic.single_run --noise 1e-5 --tag noise_1e-5
 python -m theory.mesoscopic.phase_scan
+python -m theory.mesoscopic.recommender_scan --jobs 4
+python -m theory.mesoscopic.spectrum_check
+python -m theory.mesoscopic.convergence_report
 ```
 
-See `theory/mesoscopic/README.md` for the closure assumptions and `theory/mesoscopic/RESULTS.md` for the initial PbS/SbP results.
+See `theory/mesoscopic/README.md` for assumptions and reproduction commands,
+and `theory/mesoscopic/RESULTS.md` for the corrected multi-resolution results.
 
 ### Event Database Schema
 

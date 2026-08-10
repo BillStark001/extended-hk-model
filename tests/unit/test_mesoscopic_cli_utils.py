@@ -25,6 +25,11 @@ class KineticCliUtilityTests(unittest.TestCase):
         self.assertEqual(pathway_label(2.0, 1.0), "SbP")
         self.assertEqual(pathway_label(None, np.nan), "unresolved")
 
+    def test_first_crossing_interpolates_between_records(self):
+        time = np.array([0.0, 10.0, 20.0])
+        values = np.array([0.2, 0.4, 0.8])
+        self.assertAlmostEqual(first_crossing(time, values), 12.5)
+
 
 if __name__ == "__main__":
     unittest.main()

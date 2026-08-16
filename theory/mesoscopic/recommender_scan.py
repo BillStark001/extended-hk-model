@@ -49,8 +49,8 @@ DISPLAY_NAMES = {
     "random": "Random",
     "opinion": "Opinion",
     "opinionm9": "OpinionM9",
-    "structure": "Structure",
-    "structurem9": "StructureM9",
+    "structure": "L0-Structure",
+    "structurem9": "L0-StructureM9",
 }
 
 
@@ -168,8 +168,9 @@ def _plot_comparison(
     axes[0, 0].set_ylabel(r"pathway $I_w$" + "\n" + r"rewiring $q$", fontsize=8)
     axes[1, 0].set_ylabel("first-passage order\n" + r"rewiring $q$", fontsize=8)
     axes[2, 0].set_ylabel(r"final $I_p$" + "\n" + r"rewiring $q$", fontsize=8)
-    # alpha=1 is a discrete copying/remapping limit, not a controlled
-    # continuous-time point.  Hatch that column so the distinction survives
+    # The PDE solver itself remains well defined at alpha=1, but its derivation
+    # from the synchronous microscopic update is no longer a controlled
+    # small-step approximation.  Hatch that column so the distinction survives
     # grayscale printing and does not rely on the caption alone.
     for axis in axes.ravel():
         axis.add_patch(
@@ -268,6 +269,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if not args.skip_plots:
+        args.figure_dir.mkdir(parents=True, exist_ok=True)
     base = KineticParameters(
         epsilon=args.epsilon,
         recsys_count=args.recsys_count,
@@ -354,7 +357,6 @@ def main() -> None:
         },
     )
     if not args.skip_plots:
-        args.figure_dir.mkdir(parents=True, exist_ok=True)
         _plot_comparison(
             arrays_by_recsys,
             args.figure_dir / f"f_kinetic_recsys_comparison_{args.tag}",

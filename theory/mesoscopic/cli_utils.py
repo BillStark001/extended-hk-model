@@ -23,6 +23,9 @@ REPRODUCIBILITY_SOURCES = (
     "theory/mesoscopic/phase_scan.py",
     "theory/mesoscopic/recommender_scan.py",
     "theory/mesoscopic/spectrum_check.py",
+    "theory/mesoscopic/joint_spectrum_operator.py",
+    "theory/mesoscopic/joint_spectrum.py",
+    "theory/mesoscopic/joint_spectrum_convergence.py",
     "theory/mesoscopic/spectrum_steady_states.py",
     "theory/mesoscopic/convergence_report.py",
 )

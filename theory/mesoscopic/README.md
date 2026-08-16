@@ -1,7 +1,8 @@
 # Mesoscopic density solver
 
-This package solves the no-repost/no-history pair closure of the extended HK
-model on a uniform opinion grid. The state contains node probability mass
+This package solves the no-repost/no-history pair-closure Fokker--Planck system
+of the extended HK model on a uniform cell-centered finite-volume grid. The
+state contains node probability mass
 `rho[i]` and directed edges per agent `edge[i, j]`, with invariants
 
 ```text
@@ -14,13 +15,15 @@ The microscopic and scan configurations use a fixed integer out-degree. Every
 step validates nonnegativity and all three invariants. Negative roundoff below
 the tolerance is zeroed, but a material error is not renormalized or rescaled.
 Parameter validation requires
-`dt * influence <= 1` and `dt * rewiring <= 1`.
+`dt * rewiring <= 1` for the explicit rewiring source. Backward-Euler
+transport--diffusion is an M-matrix solve and has no CFL rejection, although
+time-step refinement remains necessary for accuracy.
 
 ## Model scope
 
 - Random recommendation is exact under continuum random mixing.
 - Opinion recommendation is a soft Gaussian opinion kernel.
-- Structure is an outgoing-common-neighbor pair proxy. Exact directed
+- L0-Structure is an outgoing-common-neighbor pair proxy. Exact directed
   common-neighbor top-k ranking needs wedge state, candidate masks, and score
   order statistics.
 - OpinionM9 and StructureM9 use one Random and nine core slots at the standard
@@ -39,6 +42,7 @@ PYTHONPATH=src:. python -m theory.mesoscopic.single_run
 PYTHONPATH=src:. python -m theory.mesoscopic.phase_scan
 PYTHONPATH=src:. python -m theory.mesoscopic.recommender_scan --jobs 4
 PYTHONPATH=src:. python -m theory.mesoscopic.spectrum_check
+PYTHONPATH=src:. python -m theory.mesoscopic.joint_spectrum
 PYTHONPATH=src:. python -m theory.mesoscopic.spectrum_steady_states --jobs 3
 ```
 
@@ -46,15 +50,19 @@ The paper's resolution check is:
 
 ```sh
 PYTHONPATH=src:. python -m theory.mesoscopic.recommender_scan \
-  --grid-size 61 --output-dir outputs/theory/mesoscopic/recsys_noise_1e-5_grid61 \
+  --grid-size 61 --output-dir outputs/theory/mesoscopic/recsys_pde_noise_1e-5_grid61 \
   --jobs 2 --skip-plots
 PYTHONPATH=src:. python -m theory.mesoscopic.recommender_scan \
-  --grid-size 101 --output-dir outputs/theory/mesoscopic/recsys_noise_1e-5_grid101 \
+  --grid-size 101 --output-dir outputs/theory/mesoscopic/recsys_pde_noise_1e-5_grid101 \
   --jobs 2 --skip-plots
-PYTHONPATH=src:. python -m theory.mesoscopic.convergence_report
+PYTHONPATH=src:. python -m theory.mesoscopic.convergence_report \
+  --scan-dir 61=outputs/theory/mesoscopic/recsys_pde_noise_1e-5_grid61 \
+  --scan-dir 81=outputs/theory/mesoscopic/recsys_pde_noise_1e-5 \
+  --scan-dir 101=outputs/theory/mesoscopic/recsys_pde_noise_1e-5_grid101 \
+  --output-dir outputs/theory/mesoscopic/recsys_pde_grid_convergence
 ```
 
-The default five-kernel scan uses 81 bins, `D0=1e-5`, 4,000 time steps, and
+The default five-kernel scan uses 81 cells, `D0=1e-5`, 4,000 time steps, and
 the eight rates `0.005, 0.01, 0.03, 0.05, 0.1, 0.3, 0.5, 1` for both influence
 and rewiring. It stores index trajectories rather than full edge-field
 histories. Each analysis writes `run_metadata.json` with its command,
@@ -69,3 +77,11 @@ mode's exact symmetry sector. It does not clip or renormalize the density, and
 checks its own infinitesimal growth rates against the analytical spectrum
 before writing the figure. Independent modes can run in parallel with
 `--jobs`. See [`RESULTS.md`](RESULTS.md) for the audited numerical summary.
+
+`joint_spectrum.py` is the Section 3.6 extension for nonzero rewiring. It
+linearizes the complete periodic pair closure in the joint
+`(opinion mode, relative-edge field)` sector along the analytic rewiring base
+orbit. It writes all frozen eigenvalues and fixed-horizon time-ordered singular
+values for Random, Opinion, and OpinionM9. It deliberately contains no
+finite-system committor or terminal-outcome logic. See
+[`JOINT_SPECTRUM.md`](JOINT_SPECTRUM.md) for the derivation and scope.

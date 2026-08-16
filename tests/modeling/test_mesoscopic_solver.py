@@ -5,6 +5,8 @@ import numpy as np
 from ehk.metrics import calculate_index_series
 from ehk.modeling.mesoscopic import KineticParameters, solve
 from ehk.modeling.mesoscopic.solver import (
+    _advance_transport_diffusion,
+    _finite_volume_system,
     _recommendation_channels,
     _recommendation_kernel,
     _validate_state,
@@ -14,6 +16,15 @@ from ehk.metrics.homophily import uniform_concordance_probability
 
 
 class KineticSolverTests(unittest.TestCase):
+    def test_solver_grid_uses_finite_volume_cell_centers(self):
+        trajectory = solve(
+            KineticParameters(grid_size=25, steps=1, record_every=1)
+        )
+        dx = 2.0 / 25
+        self.assertAlmostEqual(float(trajectory.x[0]), -1.0 + dx / 2)
+        self.assertAlmostEqual(float(trajectory.x[-1]), 1.0 - dx / 2)
+        np.testing.assert_allclose(np.diff(trajectory.x), dx, atol=1e-15)
+
     def test_uniform_homophily_baseline(self):
         self.assertAlmostEqual(
             uniform_concordance_probability(0.45),
@@ -54,9 +65,73 @@ class KineticSolverTests(unittest.TestCase):
         self.assertGreaterEqual(float(trajectory.edge.min()), 0.0)
         np.testing.assert_allclose(trajectory.rho.sum(axis=1), 1.0, atol=1e-12)
 
+    def test_finite_volume_operator_has_zero_boundary_flux(self):
+        velocity = np.asarray([-0.4, -0.1, 0.2, 0.5])
+        lower, diagonal, upper = _finite_volume_system(
+            velocity, diffusion=0.03, dx=0.25, dt=0.2
+        )
+        system = np.diag(diagonal)
+        system += np.diag(lower, k=-1)
+        system += np.diag(upper, k=1)
+        # Column sums of I-dt*L equal one iff the finite-volume generator has
+        # no boundary leakage and conserves total mass.
+        np.testing.assert_allclose(system.sum(axis=0), 1.0, atol=1e-14)
+
+        rho = np.asarray([0.7, 0.2, 0.1, 0.0])
+        edge = 15.0 * np.outer(rho, rho)
+        rho_next, edge_next = _advance_transport_diffusion(
+            rho, edge, velocity, diffusion=0.03, dx=0.25, dt=0.2
+        )
+        self.assertGreaterEqual(float(rho_next.min()), 0.0)
+        self.assertGreaterEqual(float(edge_next.min()), 0.0)
+        self.assertAlmostEqual(float(rho_next.sum()), 1.0, places=13)
+        np.testing.assert_allclose(
+            edge_next.sum(axis=1), 15.0 * rho_next, atol=1e-12
+        )
+
+    def test_full_confidence_pde_converges_to_affine_contraction(self):
+        errors = []
+        for grid_size, dt in ((41, 0.02), (81, 0.01)):
+            steps = round(1.0 / dt)
+            trajectory = solve(
+                KineticParameters(
+                    grid_size=grid_size,
+                    epsilon=2.0,
+                    influence=0.2,
+                    rewiring=0.0,
+                    noise_diffusion=0.0,
+                    dt=dt,
+                    steps=steps,
+                    record_every=steps,
+                )
+            )
+            initial_variance = np.sum(
+                trajectory.rho[0] * trajectory.x * trajectory.x
+            )
+            exact_variance = initial_variance * np.exp(-0.4)
+            numerical_variance = np.sum(
+                trajectory.rho[-1] * trajectory.x * trajectory.x
+            )
+            errors.append(abs(float(numerical_variance - exact_variance)))
+        self.assertLess(errors[1], 0.55 * errors[0])
+
     def test_invalid_explicit_time_step_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "dt \\* rewiring"):
             solve(KineticParameters(dt=2.0, rewiring=0.75))
+
+    def test_implicit_transport_does_not_impose_a_courant_rejection(self):
+        trajectory = solve(
+            KineticParameters(
+                grid_size=31,
+                influence=0.75,
+                rewiring=0.0,
+                dt=2.0,
+                steps=1,
+                record_every=1,
+            )
+        )
+        self.assertGreaterEqual(float(trajectory.rho.min()), 0.0)
+        self.assertAlmostEqual(float(trajectory.rho[-1].sum()), 1.0, places=13)
 
     def test_nonfinite_and_noninteger_parameters_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "must be finite"):

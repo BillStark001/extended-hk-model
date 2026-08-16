@@ -211,7 +211,7 @@ Each simulation produces:
 
 ### Mesoscopic density solver
 
-The independent Python solver under `theory/mesoscopic/` uses the reusable model in `src/ehk/modeling/mesoscopic/` to evolve opinion density, conditional opinion velocity, and directed edge density without reposts or historical posts. It rejects material invariant errors rather than projecting them away (only sub-tolerance negative roundoff is zeroed), retains KDE tails at the physical distance boundaries, linearly interpolates threshold crossings, and writes source-hashed run metadata. It supports Random, Opinion, OpinionM9, Structure, and StructureM9 pair-closure kernels plus optional reflecting diffusion.
+The independent Python solver under `theory/mesoscopic/` uses the reusable model in `src/ehk/modeling/mesoscopic/` to evolve opinion density, conditional opinion velocity, and directed edge density without reposts or historical posts. It uses conservative cell-centered finite volumes, backward-Euler no-flux transport--diffusion, and an explicit one-for-one rewiring source. It rejects material invariant errors rather than projecting them away (only sub-tolerance negative roundoff is zeroed), retains KDE tails at the physical distance boundaries, linearly interpolates threshold crossings, and writes source-hashed run metadata. It supports Random, Opinion, OpinionM9, L0-Structure, and L0-StructureM9 pair-closure kernels.
 
 ``` bash
 python -m theory.mesoscopic.single_run
@@ -219,6 +219,7 @@ python -m theory.mesoscopic.single_run --noise 1e-5 --tag noise_1e-5
 python -m theory.mesoscopic.phase_scan
 python -m theory.mesoscopic.recommender_scan --jobs 4
 python -m theory.mesoscopic.spectrum_check
+python -m theory.mesoscopic.joint_spectrum
 python -m theory.mesoscopic.convergence_report
 ```
 

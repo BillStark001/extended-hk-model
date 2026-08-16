@@ -1,4 +1,4 @@
-"""Numerical mesoscopic solver for the no-repost/no-history EHK model.
+"""Finite-volume PDE solver for the no-repost/no-history EHK model.
 
 The state uses probability *masses* on a uniform opinion grid:
 
@@ -9,9 +9,12 @@ The state uses probability *masses* on a uniform opinion grid:
     Directed edges per agent from source bin ``i`` to target bin ``j``.
 
 Consequently ``rho.sum() == 1``, ``edge.sum() == mean_degree``, and
-``edge.sum(axis=1) == mean_degree * rho``. The update is a conservative
-operator splitting of opinion transport, optional reflecting diffusion, and
-one-for-one rewiring.
+``edge.sum(axis=1) == mean_degree * rho``.  The coupled continuity equations
+are discretized by a cell-centered finite-volume method with zero numerical
+flux at the opinion boundaries.  Backward-Euler face fluxes make each
+one-dimensional transport--diffusion sweep conservative and positivity
+preserving; the same sweep is applied to the node density and to both edge
+endpoints.  One-for-one rewiring is an explicit conservative source step.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy import sparse
+from scipy.linalg import solve_banded
 
 
 FloatArray = NDArray[np.float64]
@@ -112,8 +115,6 @@ class KineticParameters:
             raise ValueError("noise_diffusion must be non-negative")
         if self.dt <= 0 or self.steps < 1 or self.record_every < 1:
             raise ValueError("dt, steps, and record_every must be positive")
-        if self.dt * self.influence > 1 + 1e-12:
-            raise ValueError("dt * influence must not exceed 1")
         if self.dt * self.rewiring > 1 + 1e-12:
             raise ValueError("dt * rewiring must not exceed 1")
         if self.recsys.casefold() not in {
@@ -332,73 +333,85 @@ def _compute_fields(
     return velocity, rewiring_flux
 
 
-def _reflect(values: FloatArray, lower: float, upper: float) -> FloatArray:
-    width = upper - lower
-    folded = np.mod(values - lower, 2 * width)
-    return lower + np.where(folded <= width, folded, 2 * width - folded)
-
-
-def _transport_matrix(
-    x: FloatArray,
+def _finite_volume_system(
     velocity: FloatArray,
+    diffusion: float,
+    dx: float,
     dt: float,
-) -> sparse.csr_matrix:
-    """Column-stochastic conservative linear-remapping matrix."""
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Return the tridiagonal backward-Euler finite-volume system.
 
-    dx = x[1] - x[0]
-    destination = _reflect(x + dt * velocity, x[0], x[-1])
-    coordinate = np.clip((destination - x[0]) / dx, 0, x.size - 1)
-    left = np.floor(coordinate).astype(int)
-    right = np.minimum(left + 1, x.size - 1)
-    weight_right = coordinate - left
-    weight_left = 1 - weight_right
+    At an interior face, first-order upwinding supplies the advective flux and
+    a centered difference supplies the diffusive flux.  Boundary-face fluxes
+    are identically zero, which is the finite-volume no-flux condition.  The
+    resulting semi-discrete generator is conservative and Metzler, so
+    ``I - dt * L`` is an M-matrix for every positive ``dt``.
+    """
 
-    columns = np.arange(x.size)
-    rows = np.concatenate((left, right))
-    cols = np.concatenate((columns, columns))
-    data = np.concatenate((weight_left, weight_right))
-    matrix = sparse.coo_matrix(
-        (data, (rows, cols)), shape=(x.size, x.size)
-    ).tocsr()
-    matrix.eliminate_zeros()
-    return matrix
+    face_velocity = 0.5 * (velocity[:-1] + velocity[1:])
+    diffusion_rate = diffusion / (dx * dx)
+    left_to_right = np.maximum(face_velocity, 0.0) / dx + diffusion_rate
+    right_to_left = np.maximum(-face_velocity, 0.0) / dx + diffusion_rate
 
-
-def _diffusion_matrix(grid_size: int, ratio: float) -> sparse.csr_matrix:
-    """One explicit reflecting-diffusion substep as a Markov matrix."""
-
-    if not 0 <= ratio <= 0.5:
-        raise ValueError("diffusion ratio must be in [0, 0.5]")
-    rows: list[int] = []
-    cols: list[int] = []
-    data: list[float] = []
-    for source in range(grid_size):
-        if source == 0:
-            targets = ((0, 1 - ratio), (1, ratio))
-        elif source == grid_size - 1:
-            targets = ((grid_size - 2, ratio), (grid_size - 1, 1 - ratio))
-        else:
-            targets = (
-                (source - 1, ratio),
-                (source, 1 - 2 * ratio),
-                (source + 1, ratio),
-            )
-        for target, probability in targets:
-            rows.append(target)
-            cols.append(source)
-            data.append(probability)
-    return sparse.coo_matrix(
-        (data, (rows, cols)), shape=(grid_size, grid_size)
-    ).tocsr()
+    size = velocity.size
+    lower = -dt * left_to_right.copy()
+    upper = -dt * right_to_left.copy()
+    diagonal = np.ones(size, dtype=float)
+    diagonal[:-1] += dt * left_to_right
+    diagonal[1:] += dt * right_to_left
+    return lower, diagonal, upper
 
 
-def _apply_markov_transport(
-    transition: sparse.csr_matrix,
+def _solve_tridiagonal(
+    lower: FloatArray,
+    diagonal: FloatArray,
+    upper: FloatArray,
+    right_hand_side: FloatArray,
+) -> FloatArray:
+    """Solve a tridiagonal system for one or many right-hand sides."""
+
+    rhs = np.asarray(right_hand_side, dtype=float)
+    vector_input = rhs.ndim == 1
+    if vector_input:
+        rhs = rhs[:, None]
+    if rhs.ndim != 2 or rhs.shape[0] != diagonal.size:
+        raise ValueError("right-hand side has incompatible shape")
+
+    bands = np.zeros((3, diagonal.size), dtype=float)
+    bands[0, 1:] = upper
+    bands[1] = diagonal
+    bands[2, :-1] = lower
+    solution = solve_banded(
+        (1, 1), bands, rhs, overwrite_ab=True, check_finite=False
+    )
+    return solution[:, 0] if vector_input else solution
+
+
+def _advance_transport_diffusion(
     rho: FloatArray,
     edge: FloatArray,
+    velocity: FloatArray,
+    diffusion: float,
+    dx: float,
+    dt: float,
 ) -> tuple[FloatArray, FloatArray]:
-    rho_next = np.asarray(transition @ rho).ravel()
-    edge_next = np.asarray((transition @ edge) @ transition.T)
+    """Advance the coupled node/edge transport--diffusion PDE by one step.
+
+    The x-endpoint sweep advances ``rho`` and the rows of ``edge`` with the
+    same finite-volume operator.  The y-endpoint sweep then advances every
+    edge row along its target coordinate.  Because the second sweep preserves
+    each row sum, ``edge.sum(axis=1) == mean_degree * rho`` is inherited
+    algebraically from the input state.
+    """
+
+    lower, diagonal, upper = _finite_volume_system(
+        velocity, diffusion, dx, dt
+    )
+    rho_next = _solve_tridiagonal(lower, diagonal, upper, rho)
+    edge_after_x = _solve_tridiagonal(lower, diagonal, upper, edge)
+    edge_next = _solve_tridiagonal(
+        lower, diagonal, upper, edge_after_x.T
+    ).T
     return rho_next, edge_next
 
 
@@ -445,8 +458,8 @@ def solve(params: KineticParameters) -> KineticTrajectory:
     """Solve and record the mesoscopic density dynamics."""
 
     params.validate()
-    x = np.linspace(-1.0, 1.0, params.grid_size)
-    dx = x[1] - x[0]
+    dx = 2.0 / params.grid_size
+    x = -1.0 + (np.arange(params.grid_size, dtype=float) + 0.5) * dx
     rho = np.full(params.grid_size, 1 / params.grid_size, dtype=float)
     edge = params.mean_degree * np.outer(rho, rho)
     operators = _build_grid_operators(params, x)
@@ -474,31 +487,24 @@ def solve(params: KineticParameters) -> KineticTrajectory:
 
     record(0)
 
-    diffusion_matrix: sparse.csr_matrix | None = None
-    diffusion_substeps = 0
-    if params.noise_diffusion > 0:
-        total_ratio = params.noise_diffusion * params.dt / (dx * dx)
-        diffusion_substeps = max(1, int(np.ceil(total_ratio / 0.45)))
-        ratio = total_ratio / diffusion_substeps
-        diffusion_matrix = _diffusion_matrix(params.grid_size, ratio)
-
     for step in range(1, params.steps + 1):
         velocity, rewiring_flux = _compute_fields(
             params, x, rho, edge, operators=operators
         )
 
-        # Both processes use the old state, matching the synchronous
-        # microscopic update to first order in dt.
+        # Lie splitting of the PDE: a conservative rewiring source step,
+        # followed by conservative no-flux transport--diffusion sweeps in the
+        # source and target opinion coordinates.  All coefficients are frozen
+        # at the old state, so the nonlinear method is first order in time.
         edge_with_rewiring = edge + params.dt * rewiring_flux
-        transition = _transport_matrix(x, velocity, params.dt)
-        rho, edge = _apply_markov_transport(
-            transition, rho, edge_with_rewiring
+        rho, edge = _advance_transport_diffusion(
+            rho,
+            edge_with_rewiring,
+            velocity,
+            params.noise_diffusion,
+            dx,
+            params.dt,
         )
-        if diffusion_matrix is not None:
-            for _ in range(diffusion_substeps):
-                rho, edge = _apply_markov_transport(
-                    diffusion_matrix, rho, edge
-                )
         rho, edge = _validate_state(rho, edge, params.mean_degree)
 
         if step in record_set:

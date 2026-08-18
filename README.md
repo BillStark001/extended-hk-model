@@ -184,7 +184,7 @@ five matched columns:
 
 ``` bash
 python -m experiments.theory_guided.terminal_probability.run --list-presets
-python -m experiments.theory_guided.terminal_probability.run paper-grid10 --dry-run
+python -m experiments.theory_guided.terminal_probability.run paper-figure3 --dry-run
 ```
 
 See

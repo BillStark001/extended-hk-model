@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 
 import numpy as np
 
@@ -13,24 +14,27 @@ from experiments.theory_guided.terminal_probability.scenarios import (
     build_scenarios,
     load_config,
     preset_path,
-    rate_values,
 )
 
 
-CONFIG = preset_path("paper-grid10")
+CONFIG = preset_path("paper-figure3")
 
 
-def test_weighted_random_config_resolves_requested_grid() -> None:
+def test_figure3_config_resolves_twenty_conditions_with_forty_runs_each() -> None:
     config = load_config(CONFIG)
     scenarios = build_scenarios(config)
-    assert len(scenarios) == 10 * 10 * 40 * 5
-    rates = rate_values(config["rates"]["influence"])
-    assert rates[0] == 1e-3
-    assert rates[-1] == 1.0
-    assert all(
-        abs(rates[index + 1] / rates[index] - 10 ** (1 / 3)) < 1e-12
-        for index in range(9)
+    groups = Counter(
+        (
+            row["HKParams"]["Influence"],
+            row["HKParams"]["RewiringRate"],
+            row["RecsysFactoryType"],
+            row["RecSysParams"]["Steepness"],
+        )
+        for row in scenarios
     )
+    assert len(scenarios) == 4 * 5 * 40
+    assert len(groups) == 20
+    assert set(groups.values()) == {40}
 
 
 def test_common_random_numbers_and_exact_recommender_parameters() -> None:
@@ -55,41 +59,16 @@ def test_common_random_numbers_and_exact_recommender_parameters() -> None:
 
 
 def test_human_presets_have_expected_sizes() -> None:
-    expected = {"smoke": 5, "paper-comparison4": 800, "paper-grid10": 20_000}
+    expected = {"smoke": 5, "paper-figure3": 800}
     for preset, count in expected.items():
         assert len(build_scenarios(load_config(preset_path(preset)))) == count
 
 
-def test_comparison_preset_is_an_rng_subset_of_full_grid() -> None:
-    full = build_scenarios(load_config(preset_path("paper-grid10")))
-    comparison = build_scenarios(load_config(preset_path("paper-comparison4")))
-    full_rng = {
-        (
-            row["HKParams"]["Influence"],
-            row["HKParams"]["RewiringRate"],
-            row["RecsysFactoryType"],
-            row["RecSysParams"]["Steepness"],
-        ): row["RNG"]
-        for row in full
-        if "_r000_" in row["UniqueName"]
-    }
-    for row in comparison:
-        if "_r000_" not in row["UniqueName"]:
-            continue
-        key = (
-            row["HKParams"]["Influence"],
-            row["HKParams"]["RewiringRate"],
-            row["RecsysFactoryType"],
-            row["RecSysParams"]["Steepness"],
-        )
-        assert row["RNG"] == full_rng[key]
-
-
 def test_dry_run_accepts_named_preset_without_binary(capsys) -> None:
-    run_main(["smoke", "--binary", "/does/not/exist", "--dry-run"])
+    run_main(["paper-figure3", "--binary", "/does/not/exist", "--dry-run"])
     output = json.loads(capsys.readouterr().out)
-    assert output["scenario_count"] == 5
-    assert output["rate_cell_count"] == 1
+    assert output["scenario_count"] == 800
+    assert output["rate_cell_count"] == 4
 
 
 def test_comparison_cases_match_spectrum_and_micro_coordinates() -> None:

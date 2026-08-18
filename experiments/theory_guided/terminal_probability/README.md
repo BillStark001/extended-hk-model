@@ -34,22 +34,19 @@ python -m experiments.theory_guided.terminal_probability.run --list-presets
 | Preset | Resolved simulations | Intended use |
 | --- | ---: | --- |
 | `smoke` | 5 | Runtime/output check: one short run per recommender column |
-| `paper-comparison4` | 800 | Four displayed rate cases × five columns × 40 replicates |
-| `paper-grid10` | 20,000 | Full 10×10 logarithmic rate grid × five columns × 40 replicates |
+| `paper-figure3` | 800 | Figure 3's 20 conditions × 40 replicates |
 
-`paper-comparison4` reuses the corresponding `paper-grid10` RNG namespaces,
-so it is an exact initial-condition subset rather than merely a new ensemble
-at the same four parameter pairs.
-
-The full grid uses
+The four rate pairs are selected from the ten-level PDE grid
 
 ```text
 alpha, q = 10^(-3), 10^(-8/3), ..., 10^0
 ```
 
-and the five columns Random, OpinionRandom at `zeta=1,4`, and exact microscopic
-StructureRandom at `zeta=1,4`. Within each rate cell and replicate, all five
-columns share the same root RNG specification (common random numbers).
+but the microscopic runner does not simulate the other 96 rate cells. Its 20
+conditions are four displayed rate pairs crossed with Random, OpinionRandom at
+`zeta=1,4`, and exact microscopic StructureRandom at `zeta=1,4`. Within each
+rate pair and replicate, all five columns share the same root RNG specification
+(common random numbers).
 
 ## Validate and run
 
@@ -58,19 +55,19 @@ and last scenarios without creating an output directory:
 
 ```bash
 python -m experiments.theory_guided.terminal_probability.run \
-  paper-grid10 --dry-run
+  paper-figure3 --dry-run
 ```
 
 The production command agreed for the theory paper is:
 
 ```bash
 python -m experiments.theory_guided.terminal_probability.run \
-  paper-grid10 \
-  --output-dir /Volumes/DataT1/ehk_theory_run/go_simulator/terminal_probability_grid10 \
+  paper-figure3 \
+  --output-dir /Volumes/DataT1/ehk_theory_run/go_simulator/terminal_probability_figure3 \
   --concurrency 8
 ```
 
-For an actual five-run integration check, replace `paper-grid10` with `smoke`
+For an actual five-run integration check, replace `paper-figure3` with `smoke`
 and choose a disposable output directory. Unlike `--dry-run`, that command
 does start the Go simulator.
 
@@ -97,12 +94,16 @@ explicit `p_incomplete` category rather than being silently dropped.
 
 ```bash
 python -m experiments.theory_guided.terminal_probability.analyze \
-  /Volumes/DataT1/ehk_theory_run/go_simulator/terminal_probability_grid10 \
+  /Volumes/DataT1/ehk_theory_run/go_simulator/terminal_probability_figure3 \
   --jobs 8 --require-complete
 ```
 
 It writes `analysis/microscopic_terminal_runs.csv`,
 `analysis/microscopic_terminal_summary.csv`, and `analysis_metadata.json`.
+The run table contains one integer `k` per completed simulation. The summary
+contains `count_k1`, `count_k2`, `count_k3`, `count_k4plus` and their
+probabilities for every one of the 20 Figure 3 conditions. Runs without a
+valid finished state remain in the explicit `p_incomplete` category.
 Use `--limit N` only to debug the loading/classification pipeline; a limited
 summary is not a paper result.
 
@@ -120,7 +121,7 @@ After the microscopic sweep is complete, fill the lower row with:
 ```bash
 python -m experiments.theory_guided.terminal_probability.spectrum \
   --microscopic-summary \
-    /Volumes/DataT1/ehk_theory_run/go_simulator/terminal_probability_grid10/analysis/microscopic_terminal_summary.csv \
+    /Volumes/DataT1/ehk_theory_run/go_simulator/terminal_probability_figure3/analysis/microscopic_terminal_summary.csv \
   --output-dir outputs/experiments/theory_guided/terminal_probability/comparison
 ```
 

@@ -15,8 +15,7 @@ from ehk.micro.scenarios import ScenarioMetadata
 
 HERE = Path(__file__).resolve().parent
 PRESETS = {
-    "paper-grid10": HERE / "configs" / "paper_grid10.json",
-    "paper-comparison4": HERE / "configs" / "paper_comparison4.json",
+    "paper-figure3": HERE / "configs" / "paper_figure3.json",
     "smoke": HERE / "configs" / "smoke.json",
 }
 

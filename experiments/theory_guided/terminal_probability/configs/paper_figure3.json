@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "name": "terminal_probability_paper_comparison4",
-  "description": "Four alpha-q cases displayed in the paper's two-row terminal comparison.",
-  "scenario_prefix": "tp4",
-  "rng_namespace": "terminal_probability_paper_grid10",
+  "name": "terminal_probability_paper_figure3",
+  "description": "The 20 conditions displayed in Figure 3: four alpha-q cases by five recommender configurations.",
+  "scenario_prefix": "tpfig3",
+  "rng_namespace": "terminal_probability_paper_figure3",
   "replicates": 40,
   "cases": [
-    {"key": "low_rewiring", "rng_key": "a05_q00", "influence": 0.046415888336127795, "rewiring": 0.001},
-    {"key": "balanced", "rng_key": "a05_q05", "influence": 0.046415888336127795, "rewiring": 0.046415888336127795},
-    {"key": "influence_dominant", "rng_key": "a07_q02", "influence": 0.21544346900318845, "rewiring": 0.004641588833612777},
-    {"key": "rewiring_dominant", "rng_key": "a02_q07", "influence": 0.004641588833612777, "rewiring": 0.21544346900318845}
+    {"key": "low_rewiring", "influence": 0.046415888336127795, "rewiring": 0.001},
+    {"key": "balanced", "influence": 0.046415888336127795, "rewiring": 0.046415888336127795},
+    {"key": "influence_dominant", "influence": 0.21544346900318845, "rewiring": 0.004641588833612777},
+    {"key": "rewiring_dominant", "influence": 0.004641588833612777, "rewiring": 0.21544346900318845}
   ],
   "model": {
     "node_count": 500,

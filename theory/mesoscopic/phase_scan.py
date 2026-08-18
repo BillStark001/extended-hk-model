@@ -1,8 +1,8 @@
-"""Solve the paper's 8x8 alpha/q grid with the Python mesoscopic model.
+"""Solve the paper's 10x10 logarithmic alpha/q grid with the mesoscopic model.
 
 This command does not invoke the Go microscopic simulator. It evolves the
 node and directed-edge density fields from :mod:`ehk.modeling.mesoscopic.solver`, then
-plots all 64 trajectories with the full-model index definitions.
+plots all 100 trajectories with the full-model index definitions.
 
 Run as ``python -m theory.mesoscopic.phase_scan``.
 """
@@ -36,7 +36,8 @@ from theory.mesoscopic.cli_utils import (
 from theory.paths import MESOSCOPIC_OUTPUT
 
 
-RATES = np.asarray([0.005, 0.01, 0.03, 0.05, 0.1, 0.3, 0.5, 1.0])
+RATE_EXPONENTS = np.linspace(-3.0, 0.0, 10)
+RATES = np.power(10.0, RATE_EXPONENTS)
 
 
 @dataclass
@@ -260,8 +261,8 @@ def _heatmap(
         vmin=vmin,
         vmax=vmax,
     )
-    ax.set_xticks(np.arange(RATES.size), labels=[f"{v:g}" for v in RATES])
-    ax.set_yticks(np.arange(RATES.size), labels=[f"{v:g}" for v in RATES])
+    ax.set_xticks(np.arange(RATES.size), labels=[f"{v:.2g}" for v in RATES])
+    ax.set_yticks(np.arange(RATES.size), labels=[f"{v:.2g}" for v in RATES])
     ax.tick_params(axis="x", labelrotation=90)
     ax.set_xlabel(r"influence $\alpha$")
     ax.set_ylabel(r"rewiring $q$")
@@ -382,7 +383,7 @@ def main() -> None:
             result = _solve_case(*case)
             results.append(result)
             print(
-                f"[{count:02d}/64] alpha={RATES[result.alpha_index]:g}, "
+                f"[{count:03d}/{len(cases)}] alpha={RATES[result.alpha_index]:g}, "
                 f"q={RATES[result.q_index]:g}, I_w={result.pathway:.3f}"
             )
     else:
@@ -392,7 +393,7 @@ def main() -> None:
                 result = future.result()
                 results.append(result)
                 print(
-                    f"[{count:02d}/64] alpha={RATES[result.alpha_index]:g}, "
+                    f"[{count:03d}/{len(cases)}] alpha={RATES[result.alpha_index]:g}, "
                     f"q={RATES[result.q_index]:g}, I_w={result.pathway:.3f}"
                 )
 

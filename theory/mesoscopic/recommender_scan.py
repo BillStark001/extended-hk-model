@@ -1,9 +1,8 @@
-"""Compare five recommendation systems with the mesoscopic density solver.
+"""Compare five weighted-random recommendation configurations with the PDE.
 
-The calculation is intentionally a no-repost/no-history closure.  ``structure``
-and ``structurem9`` therefore use the solver's outgoing-common-neighbor pair
-closure, not the exact directed in/out common-neighbor ranker in the
-microscopic runtime.
+The calculation is intentionally a no-repost/no-history closure.
+``structure_random_l0`` uses the solver's outgoing-common-neighbor L0 pair
+proxy, not the exact integer common-neighbor score in the microscopic runtime.
 """
 
 from __future__ import annotations
@@ -38,32 +37,39 @@ from theory.mesoscopic.cli_utils import write_run_metadata
 from theory.paths import MESOSCOPIC_OUTPUT
 
 
-RECOMMENDERS = (
-    "random",
-    "opinion",
-    "opinionm9",
-    "structure",
-    "structurem9",
+CONFIGURATIONS = (
+    ("random", "random", 1.0),
+    ("opinion_random_zeta1", "opinion_random", 1.0),
+    ("opinion_random_zeta4", "opinion_random", 4.0),
+    ("structure_random_l0_zeta1", "structure_random_l0", 1.0),
+    ("structure_random_l0_zeta4", "structure_random_l0", 4.0),
 )
+RECOMMENDERS = tuple(configuration[0] for configuration in CONFIGURATIONS)
 DISPLAY_NAMES = {
     "random": "Random",
-    "opinion": "Opinion",
-    "opinionm9": "OpinionM9",
-    "structure": "L0-Structure",
-    "structurem9": "L0-StructureM9",
+    "opinion_random_zeta1": r"OpinionRandom ($\zeta=1$)",
+    "opinion_random_zeta4": r"OpinionRandom ($\zeta=4$)",
+    "structure_random_l0_zeta1": r"L0-StructureRandom ($\zeta=1$)",
+    "structure_random_l0_zeta4": r"L0-StructureRandom ($\zeta=4$)",
 }
 
 
 def _solve_recommender_case(
+    configuration: str,
     recsys: str,
+    steepness: float,
     q_index: int,
     alpha_index: int,
     base: KineticParameters,
 ) -> tuple[str, SweepResult]:
-    return recsys, _solve_case(
+    return configuration, _solve_case(
         q_index,
         alpha_index,
-        replace(base, recsys=recsys),
+        replace(
+            base,
+            recsys=recsys,
+            recommendation_steepness=steepness,
+        ),
     )
 
 
@@ -101,7 +107,7 @@ def _comparison_heatmap(
         vmax=vmax,
         norm=norm,
     )
-    rate_labels = [f"{value:g}" for value in RATES]
+    rate_labels = [f"{value:.2g}" for value in RATES]
     axis.set_xticks(
         np.arange(RATES.size), labels=rate_labels if show_x else []
     )
@@ -128,8 +134,16 @@ def _plot_comparison(
     fig, axes = plt.subplots(
         3,
         len(RECOMMENDERS),
-        figsize=(12.2, 6.8),
-        constrained_layout=True,
+        figsize=(17.2, 7.2),
+        constrained_layout=False,
+    )
+    fig.subplots_adjust(
+        left=0.065,
+        right=0.92,
+        bottom=0.13,
+        top=0.94,
+        wspace=0.18,
+        hspace=0.16,
     )
     figures = []
     for column, recsys in enumerate(RECOMMENDERS):
@@ -168,10 +182,10 @@ def _plot_comparison(
     axes[0, 0].set_ylabel(r"pathway $I_w$" + "\n" + r"rewiring $q$", fontsize=8)
     axes[1, 0].set_ylabel("first-passage order\n" + r"rewiring $q$", fontsize=8)
     axes[2, 0].set_ylabel(r"final $I_p$" + "\n" + r"rewiring $q$", fontsize=8)
-    # The PDE solver itself remains well defined at alpha=1, but its derivation
-    # from the synchronous microscopic update is no longer a controlled
-    # small-step approximation.  Hatch that column so the distinction survives
-    # grayscale printing and does not rely on the caption alone.
+    # The PDE solver itself remains well defined at alpha=1 or q=1, but its
+    # derivation from the synchronous microscopic update is no longer a
+    # controlled small-step approximation.  Hatch that column and row so the
+    # distinction survives grayscale printing.
     for axis in axes.ravel():
         axis.add_patch(
             Rectangle(
@@ -185,22 +199,40 @@ def _plot_comparison(
                 alpha=0.45,
             )
         )
-    fig.colorbar(figures[0], ax=axes[0, :], shrink=0.85, label=r"$I_w$")
+        axis.add_patch(
+            Rectangle(
+                (-0.5, RATES.size - 1.5),
+                RATES.size,
+                1,
+                fill=False,
+                hatch="\\\\\\\\",
+                edgecolor="0.25",
+                linewidth=0.45,
+                alpha=0.45,
+            )
+        )
+    fig.canvas.draw()
+
+    def color_axis(row: int):
+        bounds = axes[row, -1].get_position()
+        return fig.add_axes((0.94, bounds.y0, 0.009, bounds.height))
+
+    fig.colorbar(
+        figures[0], cax=color_axis(0), label=r"$I_w$"
+    )
     order_scalar = plt.cm.ScalarMappable(
         cmap="RdBu_r", norm=TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1)
     )
     fig.colorbar(
         order_scalar,
-        ax=axes[1, :],
-        shrink=0.85,
+        cax=color_axis(1),
         label=r"$(t_H-t_P)/(t_H+t_P)$",
     )
     polarization_scalar = plt.cm.ScalarMappable(cmap="magma")
     polarization_scalar.set_clim(0, 1)
     fig.colorbar(
         polarization_scalar,
-        ax=axes[2, :],
-        shrink=0.85,
+        cax=color_axis(2),
         label=r"final $I_p$",
     )
     for suffix in (".pdf", ".png"):
@@ -213,21 +245,24 @@ def _write_combined_summary(
     output_path: Path,
 ) -> None:
     fieldnames = (
-        "recsys", "alpha", "q", "path", "I_w", "t_Ip_0.5", "t_Ih_0.5",
-        "I_p_final", "I_h_final", "I_s_final",
+        "configuration", "recsys", "steepness", "alpha", "q", "path",
+        "I_w", "t_Ip_0.5", "t_Ih_0.5", "I_p_final", "I_h_final",
+        "I_s_final",
     )
     with output_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(
             file, fieldnames=fieldnames, lineterminator="\n"
         )
         writer.writeheader()
-        for recsys in RECOMMENDERS:
+        for configuration, recsys, steepness in CONFIGURATIONS:
             for result in sorted(
-                results_by_recsys[recsys],
+                results_by_recsys[configuration],
                 key=lambda item: (item.q_index, item.alpha_index),
             ):
                 writer.writerow({
+                    "configuration": configuration,
                     "recsys": recsys,
+                    "steepness": steepness,
                     "alpha": RATES[result.alpha_index],
                     "q": RATES[result.q_index],
                     "path": _path_label(result),
@@ -250,6 +285,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--noise", type=float, default=1e-5)
     parser.add_argument("--recsys-count", type=int, default=10)
     parser.add_argument("--random-mix", type=float, default=0.1)
+    parser.add_argument("--opinion-tolerance", type=float, default=0.4)
+    parser.add_argument("--random-ratio", type=float, default=0.0)
     parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 1, 4))
     output_root = MESOSCOPIC_OUTPUT.resolve()
     parser.add_argument(
@@ -275,6 +312,9 @@ def main() -> None:
         epsilon=args.epsilon,
         recsys_count=args.recsys_count,
         random_mix=args.random_mix,
+        opinion_tolerance=args.opinion_tolerance,
+        recommendation_steepness=1.0,
+        recommendation_random_ratio=args.random_ratio,
         noise_diffusion=args.noise,
         grid_size=args.grid_size,
         dt=args.dt,
@@ -282,8 +322,8 @@ def main() -> None:
         record_every=args.record_every,
     )
     cases = [
-        (recsys, q_index, alpha_index, base)
-        for recsys in RECOMMENDERS
+        (configuration, recsys, steepness, q_index, alpha_index, base)
+        for configuration, recsys, steepness in CONFIGURATIONS
         for q_index in range(RATES.size)
         for alpha_index in range(RATES.size)
     ]
@@ -292,9 +332,9 @@ def main() -> None:
     }
     if args.jobs == 1:
         iterator = map(lambda case: _solve_recommender_case(*case), cases)
-        for count, (recsys, result) in enumerate(iterator, start=1):
-            results_by_recsys[recsys].append(result)
-            print(f"[{count:03d}/320] {recsys} alpha={RATES[result.alpha_index]:g}, "
+        for count, (configuration, result) in enumerate(iterator, start=1):
+            results_by_recsys[configuration].append(result)
+            print(f"[{count:03d}/{len(cases)}] {configuration} alpha={RATES[result.alpha_index]:g}, "
                   f"q={RATES[result.q_index]:g}, I_w={result.pathway:.3f}")
     else:
         with ProcessPoolExecutor(max_workers=args.jobs) as executor:
@@ -302,27 +342,31 @@ def main() -> None:
                 executor.submit(_solve_recommender_case, *case) for case in cases
             ]
             for count, future in enumerate(as_completed(futures), start=1):
-                recsys, result = future.result()
-                results_by_recsys[recsys].append(result)
-                print(f"[{count:03d}/320] {recsys} alpha={RATES[result.alpha_index]:g}, "
+                configuration, result = future.result()
+                results_by_recsys[configuration].append(result)
+                print(f"[{count:03d}/{len(cases)}] {configuration} alpha={RATES[result.alpha_index]:g}, "
                       f"q={RATES[result.q_index]:g}, I_w={result.pathway:.3f}")
 
     arrays_by_recsys: dict[str, dict[str, np.ndarray]] = {}
-    for recsys in RECOMMENDERS:
-        arrays = _result_arrays(results_by_recsys[recsys])
-        arrays_by_recsys[recsys] = arrays
-        params = replace(base, recsys=recsys)
-        output_dir = args.output_dir / recsys
-        _save_data(results_by_recsys[recsys], arrays, output_dir, params)
+    for configuration, recsys, steepness in CONFIGURATIONS:
+        arrays = _result_arrays(results_by_recsys[configuration])
+        arrays_by_recsys[configuration] = arrays
+        params = replace(
+            base,
+            recsys=recsys,
+            recommendation_steepness=steepness,
+        )
+        output_dir = args.output_dir / configuration
+        _save_data(results_by_recsys[configuration], arrays, output_dir, params)
         if not args.skip_plots:
             _plot_path_grid(
                 arrays,
-                args.figure_dir / f"f_kinetic_pathway_grid_{recsys}_{args.tag}",
+                args.figure_dir / f"f_kinetic_pathway_grid_{configuration}_{args.tag}",
                 params,
             )
             _plot_summary(
                 arrays,
-                args.figure_dir / f"f_kinetic_sweep_summary_{recsys}_{args.tag}",
+                args.figure_dir / f"f_kinetic_sweep_summary_{configuration}_{args.tag}",
             )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_combined_summary(
@@ -332,23 +376,30 @@ def main() -> None:
         args.output_dir / "recsys_indices.npz",
         alpha=RATES,
         q=RATES,
-        recsys=np.asarray(RECOMMENDERS),
+        configuration=np.asarray(RECOMMENDERS),
         **{
-            f"{recsys}_{name}": values
-            for recsys, arrays in arrays_by_recsys.items()
+            f"{configuration}_{name}": values
+            for configuration, arrays in arrays_by_recsys.items()
             for name, values in arrays.items()
         },
     )
     write_run_metadata(
         args.output_dir / "run_metadata.json",
-        analysis="five-recommender mesoscopic scan",
+        analysis="five-configuration weighted-random recommender mesoscopic scan",
         command=shlex.join(
             [sys.executable, "-m", "theory.mesoscopic.recommender_scan", *sys.argv[1:]]
         ),
         parameters=asdict(base),
         configuration={
             "rates": RATES.tolist(),
-            "recommenders": list(RECOMMENDERS),
+            "configurations": [
+                {
+                    "key": configuration,
+                    "recsys": recsys,
+                    "steepness": steepness,
+                }
+                for configuration, recsys, steepness in CONFIGURATIONS
+            ],
             "jobs": args.jobs,
             "skip_plots": args.skip_plots,
             "output_dir": str(args.output_dir.resolve()),
@@ -361,7 +412,7 @@ def main() -> None:
             arrays_by_recsys,
             args.figure_dir / f"f_kinetic_recsys_comparison_{args.tag}",
         )
-    print(f"five-system mesoscopic sweep data written to {args.output_dir}")
+    print(f"five-configuration mesoscopic sweep data written to {args.output_dir}")
 
 
 if __name__ == "__main__":

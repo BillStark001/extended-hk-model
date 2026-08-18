@@ -23,6 +23,7 @@ There are some concepts renamed in the preprint, including:
 ├── theory/                 # Mesoscopic and analytic theory tasks
 ├── experiments/
 │   ├── theory_guided/      # Runtime-backed theory identification and validation
+│   │   └── terminal_probability/ # Preset micro/spectrum terminal workflow
 │   └── paper/              # Paper scans, analysis, plots, and illustrations
 ├── outputs/                # Generated data and figures, grouped by task and ignored by Git
 ├── data/                   # Versioned fixtures and external-data manifests
@@ -128,6 +129,7 @@ STAT_THREAD_COUNT=6
 EHK_THEORY_MESOSCOPIC_OUTPUT_DIR=/path/to/theory/output
 EHK_SOCIAL_FORCE_INPUT_DIR=/path/to/mechanism/raw
 EHK_SOCIAL_FORCE_OUTPUT_DIR=/path/to/probe/output
+EHK_TERMINAL_PROBABILITY_OUTPUT_DIR=/path/to/terminal/output
 ```
 
 Every registered input or output path has the repository-local default shown in `theory/paths.py`, `experiments/paths.py`, or `experiments/paper/paths.py`; a matching environment variable can override it through `.env`.
@@ -175,6 +177,19 @@ Available scenarios:
 - `epsilon`: Tolerance threshold analysis
 - `replicate`: Replication-based statistical validation
 - `mech`: Mechanism pathway analysis
+
+The theory-paper terminal-probability comparison has its own preset runner,
+because it uses weighted-random recommenders and common random numbers across
+five matched columns:
+
+``` bash
+python -m experiments.theory_guided.terminal_probability.run --list-presets
+python -m experiments.theory_guided.terminal_probability.run paper-grid10 --dry-run
+```
+
+See
+[`experiments/theory_guided/terminal_probability/README.md`](experiments/theory_guided/terminal_probability/README.md)
+for production, analysis, and spectrum commands.
 
 Examples:
 

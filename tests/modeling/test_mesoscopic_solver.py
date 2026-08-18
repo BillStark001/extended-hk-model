@@ -196,6 +196,42 @@ class KineticSolverTests(unittest.TestCase):
         )
         self.assertGreater(float(np.max(np.abs(m9 - pure))), 1e-6)
 
+    def test_opinion_random_uses_tent_score_and_steepness(self):
+        x = np.asarray([-0.5, 0.0, 0.25, 0.5])
+        rho = np.full(x.size, 1 / x.size)
+        neighbors = np.broadcast_to(rho, (x.size, x.size)).copy()
+        params = KineticParameters(
+            recsys="opinion_random",
+            opinion_tolerance=0.5,
+            recommendation_steepness=2.0,
+        )
+        kernel = _recommendation_kernel(params, x, rho, neighbors)
+        expected_score = np.maximum(
+            1 - np.abs(x[None, :] - x[:, None]) / 0.5, 0
+        ) ** 2
+        expected = expected_score * rho[None, :]
+        expected /= expected.sum(axis=1, keepdims=True)
+        np.testing.assert_allclose(kernel, expected, atol=1e-15)
+
+    def test_structure_random_l0_uses_steepness_power(self):
+        x = np.linspace(-1.0, 1.0, 5)
+        rho = np.full(x.size, 1 / x.size)
+        neighbors = np.asarray([
+            [0.6, 0.4, 0.0, 0.0, 0.0],
+            [0.3, 0.5, 0.2, 0.0, 0.0],
+            [0.0, 0.2, 0.6, 0.2, 0.0],
+            [0.0, 0.0, 0.2, 0.5, 0.3],
+            [0.0, 0.0, 0.0, 0.4, 0.6],
+        ])
+        params = KineticParameters(
+            recsys="structure_random_l0",
+            recommendation_steepness=2.0,
+        )
+        kernel = _recommendation_kernel(params, x, rho, neighbors)
+        expected = (neighbors @ neighbors.T) ** 2 * rho[None, :]
+        expected /= expected.sum(axis=1, keepdims=True)
+        np.testing.assert_allclose(kernel, expected, atol=1e-15)
+
     def test_baseline_parameters_produce_opposite_path_orderings(self):
         results = {}
         for label, influence in (("pbs", 0.05), ("sbp", 0.005)):

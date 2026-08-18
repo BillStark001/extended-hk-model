@@ -50,6 +50,14 @@ class KineticParameters:
     # recommendation slots for Random.  At the standard RecsysCount=10 this
     # gives one random and nine ranked recommendations.
     random_mix: float = 0.1
+    # Parameters of the weighted-random recommenders implemented by the
+    # microscopic runtime.  OpinionRandom uses
+    # [1-|x-y|/opinion_tolerance]_+^recommendation_steepness;
+    # StructureRandom uses the same steepness power on its structural score.
+    opinion_tolerance: float = 0.4
+    recommendation_steepness: float = 1.0
+    recommendation_random_ratio: float = 0.0
+    # Retained only for the legacy Gaussian ``opinion`` closure.
     opinion_bandwidth: float = 0.1
     noise_diffusion: float = 0.0
     grid_size: int = 81
@@ -64,6 +72,9 @@ class KineticParameters:
             "rewiring": self.rewiring,
             "mean_degree": self.mean_degree,
             "random_mix": self.random_mix,
+            "opinion_tolerance": self.opinion_tolerance,
+            "recommendation_steepness": self.recommendation_steepness,
+            "recommendation_random_ratio": self.recommendation_random_ratio,
             "opinion_bandwidth": self.opinion_bandwidth,
             "noise_diffusion": self.noise_diffusion,
             "dt": self.dt,
@@ -109,6 +120,12 @@ class KineticParameters:
             )
         if not 0 <= self.random_mix <= 1:
             raise ValueError("random_mix must be in [0, 1]")
+        if self.opinion_tolerance <= 0:
+            raise ValueError("opinion_tolerance must be positive")
+        if self.recommendation_steepness <= 0:
+            raise ValueError("recommendation_steepness must be positive")
+        if not 0 <= self.recommendation_random_ratio <= 1:
+            raise ValueError("recommendation_random_ratio must be in [0, 1]")
         if self.opinion_bandwidth <= 0:
             raise ValueError("opinion_bandwidth must be positive")
         if self.noise_diffusion < 0:
@@ -119,7 +136,8 @@ class KineticParameters:
             raise ValueError("dt * rewiring must not exceed 1")
         if self.recsys.casefold() not in {
             "random", "rand", "opinion", "op", "structure", "st",
-            "opinionm9", "structurem9",
+            "opinionm9", "structurem9", "opinionrandom",
+            "opinion_random", "structure_random_l0", "structurerandoml0",
         }:
             raise ValueError(f"unsupported recommendation system: {self.recsys}")
 
@@ -153,10 +171,16 @@ def _build_grid_operators(
 ) -> _GridOperators:
     delta = x[None, :] - x[:, None]
     concordant = np.abs(delta) <= params.epsilon
-    if params.recsys.casefold() in {"opinion", "opinionm9", "op"}:
+    recsys = params.recsys.casefold()
+    if recsys in {"opinion", "opinionm9", "op"}:
         opinion_score = np.exp(
             -0.5 * (delta / params.opinion_bandwidth) ** 2
         )
+    elif recsys in {"opinionrandom", "opinion_random"}:
+        opinion_score = np.maximum(
+            1.0 - np.abs(delta) / params.opinion_tolerance,
+            0.0,
+        ) ** params.recommendation_steepness
     else:
         opinion_score = None
     return _GridOperators(delta, concordant, opinion_score)
@@ -217,10 +241,30 @@ def _recommendation_channels(
             delta = x[None, :] - x[:, None]
             score = np.exp(-0.5 * (delta / params.opinion_bandwidth) ** 2)
         core = _row_normalize(score * rho[None, :], random_kernel)
+    elif recsys in {"opinionrandom", "opinion_random"}:
+        score = opinion_score
+        if score is None:
+            delta = x[None, :] - x[:, None]
+            score = np.maximum(
+                1.0 - np.abs(delta) / params.opinion_tolerance,
+                0.0,
+            ) ** params.recommendation_steepness
+        weighted = _row_normalize(score * rho[None, :], random_kernel)
+        beta = params.recommendation_random_ratio
+        core = (1.0 - beta) * weighted + beta * random_kernel
     elif recsys in {"structure", "structurem9", "st"}:
         # Expected overlap of the two endpoints' outgoing neighborhoods.
         score = neighbors @ neighbors.T
         core = _row_normalize(score * rho[None, :], random_kernel)
+    elif recsys in {"structure_random_l0", "structurerandoml0"}:
+        # L0 pair proxy for StructureRandom.  The microscopic score is an
+        # integer common-neighbor count; replacing its steepness power by the
+        # power of the expected overlap is an explicit moment closure.
+        score = np.maximum(neighbors @ neighbors.T, 0.0)
+        score = score ** params.recommendation_steepness
+        weighted = _row_normalize(score * rho[None, :], random_kernel)
+        beta = params.recommendation_random_ratio
+        core = (1.0 - beta) * weighted + beta * random_kernel
     else:
         raise ValueError(f"unsupported recommendation system: {params.recsys}")
 

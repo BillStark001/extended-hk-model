@@ -37,6 +37,7 @@ class JointSpectrumParameters:
     recsys_count: int = 10
     random_mix: float = 0.1
     opinion_bandwidth: float = 0.1
+    opinion_tolerance: float = 0.4
     diffusion: float = 1e-5
     grid_size: int = 32
     difference_step: float = 1e-6
@@ -50,8 +51,10 @@ class JointSpectrumParameters:
             raise ValueError("mean_degree and recsys_count must be positive")
         if not 0 <= self.random_mix <= 1:
             raise ValueError("random_mix must lie in [0, 1]")
-        if self.opinion_bandwidth <= 0 or self.diffusion < 0:
-            raise ValueError("bandwidth must be positive and diffusion non-negative")
+        if self.opinion_bandwidth <= 0 or self.opinion_tolerance <= 0:
+            raise ValueError("opinion kernel scales must be positive")
+        if self.diffusion < 0:
+            raise ValueError("diffusion must be non-negative")
         if self.grid_size < 16 or self.grid_size % 2:
             raise ValueError("grid_size must be an even integer >= 16")
         if not 0 < self.difference_step < 1e-2:
@@ -60,11 +63,13 @@ class JointSpectrumParameters:
 
 @dataclass(frozen=True)
 class RecommendationSlots:
-    """Finite Random/Opinion recommendation-slot allocation."""
+    """Finite random/core recommendation-slot allocation and core kernel."""
 
     name: str
     random: int
     opinion: int
+    kernel: str = "gaussian_opinion"
+    steepness: float = 1.0
 
     @property
     def total(self) -> int:
@@ -110,8 +115,12 @@ def recommendation_slots(
     *,
     recsys_count: int = 10,
     random_mix: float = 0.1,
+    steepness: float = 1.0,
 ) -> RecommendationSlots:
-    """Resolve the Random, Opinion, or OpinionM9 pair-closure kernel."""
+    """Resolve a recommendation rule used by the periodic pair closure."""
+
+    if steepness <= 0:
+        raise ValueError("recommendation steepness must be positive")
 
     normalized = name.casefold()
     if normalized in {"random", "rand"}:
@@ -124,10 +133,67 @@ def recommendation_slots(
         return RecommendationSlots(
             "OpinionM9", random_count, recsys_count - random_count
         )
+    if normalized in {"opinionrandom", "opinion_random"}:
+        return RecommendationSlots(
+            f"OpinionRandom-zeta{steepness:g}",
+            0,
+            recsys_count,
+            "opinion_random",
+            steepness,
+        )
+    if normalized in {
+        "structurerandoml0", "structure_random_l0", "structurerandom"
+    }:
+        return RecommendationSlots(
+            f"L0-StructureRandom-zeta{steepness:g}",
+            0,
+            recsys_count,
+            "structure_random_l0",
+            steepness,
+        )
     raise ValueError(
-        "joint pair spectrum supports Random, Opinion, and OpinionM9; "
+        "unsupported joint pair-spectrum recommendation rule; "
         f"got {name!r}"
     )
+
+
+def _normalize_target_kernel(
+    raw: ComplexArray,
+    *,
+    dx: float,
+) -> ComplexArray:
+    denominator = raw.sum(axis=1, keepdims=True) * dx
+    if np.any(np.abs(denominator) < 1e-14):
+        raise FloatingPointError("recommendation kernel has zero row mass")
+    return raw / denominator
+
+
+def _core_recommendation_kernel(
+    rho: ComplexArray,
+    neighbors: ComplexArray,
+    *,
+    slots: RecommendationSlots,
+    parameters: JointSpectrumParameters,
+    delta: FloatArray,
+    dx: float,
+) -> ComplexArray:
+    """Return the normalized core kernel used by one recommendation slot."""
+
+    if slots.kernel == "gaussian_opinion":
+        score = np.exp(-0.5 * (delta / parameters.opinion_bandwidth) ** 2)
+    elif slots.kernel == "opinion_random":
+        score = np.maximum(
+            1.0 - np.abs(delta) / parameters.opinion_tolerance,
+            0.0,
+        ) ** slots.steepness
+    elif slots.kernel == "structure_random_l0":
+        # Pair-level L0 closure: expected outgoing-neighborhood overlap.
+        # The exact microscopic score is integer-valued and motif-dependent.
+        score = (neighbors @ neighbors.T) * dx
+        score = score ** slots.steepness
+    else:
+        raise ValueError(f"unsupported recommendation kernel: {slots.kernel}")
+    return _normalize_target_kernel(score * rho[None, :], dx=dx)
 
 
 def periodic_derivative(
@@ -168,8 +234,16 @@ def build_joint_grid(
     concordant = np.abs(delta) <= parameters.epsilon
     rho0 = 1 / parameters.length
     random = np.full_like(delta, rho0)
-    score = np.exp(-0.5 * (delta / parameters.opinion_bandwidth) ** 2)
-    opinion = score / (score.sum(axis=1, keepdims=True) * dx)
+    rho = np.full(size, rho0, dtype=complex)
+    neighbors = np.full((size, size), rho0, dtype=complex)
+    opinion = _core_recommendation_kernel(
+        rho,
+        neighbors,
+        slots=slots,
+        parameters=parameters,
+        delta=delta,
+        dx=dx,
+    ).real
     recommendation_mass = slots.random * random + slots.opinion * opinion
     gain_raw = concordant * recommendation_mass
     gain = gain_raw / (gain_raw.sum(axis=1, keepdims=True) * dx)
@@ -231,11 +305,14 @@ def pair_rhs(
 
     neighbors = edge / (parameters.mean_degree * rho[:, None])
     random = np.broadcast_to(rho[None, :], edge.shape)
-    opinion_raw = (
-        np.exp(-0.5 * (grid.delta / parameters.opinion_bandwidth) ** 2)
-        * rho[None, :]
+    opinion = _core_recommendation_kernel(
+        rho,
+        neighbors,
+        slots=slots,
+        parameters=parameters,
+        delta=grid.delta,
+        dx=grid.dx,
     )
-    opinion = opinion_raw / (opinion_raw.sum(axis=1, keepdims=True) * grid.dx)
     recommendation_mass = slots.random * random + slots.opinion * opinion
     visible = parameters.mean_degree * neighbors + recommendation_mass
     denominator = (grid.concordant * visible).sum(axis=1) * grid.dx

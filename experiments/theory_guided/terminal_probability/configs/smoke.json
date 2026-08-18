@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "name": "terminal_probability_smoke",
+  "description": "Five short runs for checking the runtime, metadata, and output path.",
+  "scenario_prefix": "tpsmoke",
+  "replicates": 1,
+  "cases": [
+    {"key": "balanced", "influence": 0.05, "rewiring": 0.05}
+  ],
+  "model": {
+    "node_count": 50,
+    "node_follow_count": 5,
+    "confidence_radius": 0.45,
+    "recommendation_count": 4,
+    "post_retain_count": 0,
+    "maximum_steps": 20,
+    "opinion_tolerance": 0.4,
+    "score_noise_std": 0.0,
+    "random_ratio": 0.0
+  },
+  "configurations": [
+    {"key": "random", "factory": "Random", "steepness": 1.0},
+    {"key": "opinion_random_zeta1", "factory": "OpinionRandom", "steepness": 1.0},
+    {"key": "opinion_random_zeta4", "factory": "OpinionRandom", "steepness": 4.0},
+    {"key": "structure_random_zeta1", "factory": "StructureRandom", "steepness": 1.0},
+    {"key": "structure_random_zeta4", "factory": "StructureRandom", "steepness": 4.0}
+  ]
+}

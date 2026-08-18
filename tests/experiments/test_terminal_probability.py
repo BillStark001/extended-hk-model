@@ -1,0 +1,126 @@
+import json
+
+import numpy as np
+
+from experiments.theory_guided.terminal_probability.analyze import (
+    comparison_case,
+    summarize,
+    terminal_peak_count,
+)
+from experiments.theory_guided.terminal_probability.run import main as run_main
+from experiments.theory_guided.terminal_probability.scenarios import (
+    PAPER_COMPARISON_CASES,
+    build_scenarios,
+    load_config,
+    preset_path,
+    rate_values,
+)
+
+
+CONFIG = preset_path("paper-grid10")
+
+
+def test_weighted_random_config_resolves_requested_grid() -> None:
+    config = load_config(CONFIG)
+    scenarios = build_scenarios(config)
+    assert len(scenarios) == 10 * 10 * 40 * 5
+    rates = rate_values(config["rates"]["influence"])
+    assert rates[0] == 1e-3
+    assert rates[-1] == 1.0
+    assert all(
+        abs(rates[index + 1] / rates[index] - 10 ** (1 / 3)) < 1e-12
+        for index in range(9)
+    )
+
+
+def test_common_random_numbers_and_exact_recommender_parameters() -> None:
+    config = load_config(CONFIG)
+    scenarios = build_scenarios(config)
+    first_cell = scenarios[:5]
+    assert len({json.dumps(row["RNG"], sort_keys=True) for row in first_cell}) == 1
+    assert [row["RecsysFactoryType"] for row in first_cell] == [
+        "Random",
+        "OpinionRandom",
+        "OpinionRandom",
+        "StructureRandom",
+        "StructureRandom",
+    ]
+    assert [row["RecSysParams"]["Steepness"] for row in first_cell] == [
+        1.0, 1.0, 4.0, 1.0, 4.0,
+    ]
+    assert all(
+        row["NodeCount"] == 500 and row["NodeFollowCount"] == 15
+        for row in first_cell
+    )
+
+
+def test_human_presets_have_expected_sizes() -> None:
+    expected = {"smoke": 5, "paper-comparison4": 800, "paper-grid10": 20_000}
+    for preset, count in expected.items():
+        assert len(build_scenarios(load_config(preset_path(preset)))) == count
+
+
+def test_comparison_preset_is_an_rng_subset_of_full_grid() -> None:
+    full = build_scenarios(load_config(preset_path("paper-grid10")))
+    comparison = build_scenarios(load_config(preset_path("paper-comparison4")))
+    full_rng = {
+        (
+            row["HKParams"]["Influence"],
+            row["HKParams"]["RewiringRate"],
+            row["RecsysFactoryType"],
+            row["RecSysParams"]["Steepness"],
+        ): row["RNG"]
+        for row in full
+        if "_r000_" in row["UniqueName"]
+    }
+    for row in comparison:
+        if "_r000_" not in row["UniqueName"]:
+            continue
+        key = (
+            row["HKParams"]["Influence"],
+            row["HKParams"]["RewiringRate"],
+            row["RecsysFactoryType"],
+            row["RecSysParams"]["Steepness"],
+        )
+        assert row["RNG"] == full_rng[key]
+
+
+def test_dry_run_accepts_named_preset_without_binary(capsys) -> None:
+    run_main(["smoke", "--binary", "/does/not/exist", "--dry-run"])
+    output = json.loads(capsys.readouterr().out)
+    assert output["scenario_count"] == 5
+    assert output["rate_cell_count"] == 1
+
+
+def test_comparison_cases_match_spectrum_and_micro_coordinates() -> None:
+    assert [
+        comparison_case(case.alpha, case.rewiring)
+        for case in PAPER_COMPARISON_CASES
+    ] == [case.key for case in PAPER_COMPARISON_CASES]
+
+
+def test_terminal_peak_classifier_and_incomplete_probability() -> None:
+    one_cluster = np.linspace(-0.05, 0.05, 500)
+    two_clusters = np.concatenate([
+        np.linspace(-0.65, -0.55, 250),
+        np.linspace(0.55, 0.65, 250),
+    ])
+    assert terminal_peak_count(one_cluster, 0.45) == 1
+    assert terminal_peak_count(two_clusters, 0.45) == 2
+
+    summary = summarize([
+        {
+            "configuration": "random", "case": "balanced",
+            "alpha": 0.05, "q": 0.05, "status": "complete", "k": 2,
+        },
+        {
+            "configuration": "random", "case": "balanced",
+            "alpha": 0.05, "q": 0.05, "status": "unfinished", "k": np.nan,
+        },
+    ])
+    row = summary.iloc[0]
+    assert row["p_k2"] == 0.5
+    assert row["p_incomplete"] == 0.5
+    assert sum(row[column] for column in (
+        "p_k1", "p_k2", "p_k3", "p_k4plus", "p_incomplete"
+    )) == 1.0

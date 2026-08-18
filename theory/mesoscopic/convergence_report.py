@@ -1,4 +1,4 @@
-"""Summarize grid sensitivity of completed five-recommender scans."""
+"""Summarize grid sensitivity of completed recommender scans."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _path_counts(summary_path: Path, recommender: str) -> dict[str, int]:
         rows = [
             row
             for row in csv.DictReader(stream)
-            if row["recsys"] == recommender
+            if row["configuration"] == recommender
         ]
     return {
         label: sum(row["path"] == label for row in rows)
@@ -93,7 +93,7 @@ def main() -> None:
             rows.append(
                 {
                     "grid_size": grid,
-                    "recsys": recommender,
+                    "configuration": recommender,
                     "mean_I_w": float(pathway.mean()),
                     "mean_final_I_p": float(final_polarization.mean()),
                     **counts,
@@ -117,8 +117,8 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(rows)
     write_run_metadata(
-        args.output_dir / "run_metadata.json",
-        analysis="five-recommender grid-convergence summary",
+        args.output_dir / "grid_convergence_metadata.json",
+        analysis="weighted-random recommender grid-convergence summary",
         command=shlex.join(
             [
                 sys.executable,

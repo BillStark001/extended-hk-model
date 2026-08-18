@@ -19,6 +19,50 @@ from theory.mesoscopic.joint_spectrum_operator import (
 
 
 class JointSpectrumTests(unittest.TestCase):
+    def test_weighted_random_kernels_are_normalized_and_steepness_resolved(self):
+        parameters = JointSpectrumParameters(grid_size=32)
+        opinion_low = build_joint_grid(
+            recommendation_slots("opinion_random", steepness=1), parameters
+        )
+        opinion_high = build_joint_grid(
+            recommendation_slots("opinion_random", steepness=4), parameters
+        )
+        structure_low = build_joint_grid(
+            recommendation_slots("structure_random_l0", steepness=1), parameters
+        )
+        structure_high = build_joint_grid(
+            recommendation_slots("structure_random_l0", steepness=4), parameters
+        )
+        for grid in (opinion_low, opinion_high, structure_low, structure_high):
+            np.testing.assert_allclose(grid.opinion.sum(axis=1) * grid.dx, 1.0)
+        self.assertGreater(
+            float(np.linalg.norm(opinion_low.opinion - opinion_high.opinion)), 1e-3
+        )
+        # A random product graph has constant expected overlap, so both L0
+        # steepnesses intentionally share the same unperturbed kernel.
+        np.testing.assert_allclose(structure_low.opinion, structure_high.opinion)
+
+    def test_structure_random_steepness_changes_pair_tangent(self):
+        parameters = JointSpectrumParameters(grid_size=16)
+        matrices = []
+        for steepness in (1.0, 4.0):
+            slots = recommendation_slots(
+                "structure_random_l0", steepness=steepness
+            )
+            grid = build_joint_grid(slots, parameters)
+            matrices.append(
+                joint_jacobian(
+                    slots=slots,
+                    alpha=0.05,
+                    rewiring=0.05,
+                    mode=2,
+                    discordant_fraction=0.5 * grid.initial_discordant,
+                    parameters=parameters,
+                    grid=grid,
+                )
+            )
+        self.assertGreater(float(np.linalg.norm(matrices[0] - matrices[1])), 1e-3)
+
     def test_random_q0_product_branch_recovers_scalar_spectrum(self):
         parameters = JointSpectrumParameters(grid_size=64)
         slots = recommendation_slots("random")

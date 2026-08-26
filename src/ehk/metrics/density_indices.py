@@ -10,6 +10,7 @@ from scipy.stats import norm
 
 from ehk.metrics.homophily import normalize_homophily
 from ehk.modeling.mesoscopic.solver import FloatArray, KineticTrajectory
+from ehk.modeling.opinion_cells import ConfidenceMode, confidence_geometry
 
 
 @dataclass
@@ -81,7 +82,13 @@ def _mixture_pdf(
 
 
 class _DensityIndexCalculator:
-    def __init__(self, x: FloatArray, epsilon: float, mean_degree: float):
+    def __init__(
+        self,
+        x: FloatArray,
+        epsilon: float,
+        mean_degree: float,
+        confidence_mode: ConfidenceMode = "cell_average",
+    ):
         self.x = x
         self.epsilon = epsilon
         self.mean_degree = mean_degree
@@ -120,9 +127,9 @@ class _DensityIndexCalculator:
             self.random_pdf,
             self.distance_axis,
         )
-        self.concordant = (
-            np.abs(x[:, None] - x[None, :]) <= epsilon
-        )
+        self.concordant = confidence_geometry(
+            x, epsilon, confidence_mode
+        ).concordance
 
     def calculate(
         self,
@@ -223,6 +230,7 @@ def calculate_index_series(trajectory: KineticTrajectory) -> IndexSeries:
         trajectory.x,
         trajectory.parameters.epsilon,
         trajectory.parameters.mean_degree,
+        trajectory.parameters.confidence_mode,
     )
     rows = np.asarray(
         [

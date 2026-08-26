@@ -20,13 +20,16 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 import numpy as np
 from numpy.polynomial.hermite import hermgauss
 from numpy.typing import NDArray
 from scipy.signal import find_peaks
-from scipy.stats import binom, norm
+from scipy.stats import norm
+
+from .opinion_cells import ConfidenceGeometry, ConfidenceMode, confidence_geometry
 
 FloatArray = NDArray[np.float64]
 StateLevel = Literal["pair", "score_moments"]
@@ -47,6 +50,7 @@ class TerminalGeneratorParameters:
     recsys: str = "random"
     recommendation_steepness: float = 1.0
     opinion_tolerance: float = 0.4
+    confidence_mode: ConfidenceMode = "cell_average"
     state_level: StateLevel = "score_moments"
     timescale: Timescale = "unsplit"
     max_steps: int = 20_000
@@ -70,6 +74,8 @@ class TerminalGeneratorParameters:
             raise ValueError(f"unsupported recommender: {self.recsys}")
         if self.recommendation_steepness not in {1.0, 4.0}:
             raise ValueError("the generator supports score powers 1 and 4")
+        if self.confidence_mode not in {"cell_average", "center"}:
+            raise ValueError(f"unknown confidence mode: {self.confidence_mode}")
         if self.state_level not in {"pair", "score_moments"}:
             raise ValueError(f"unknown state level: {self.state_level}")
         if self.timescale not in {"unsplit", "fast_slow"}:
@@ -252,93 +258,159 @@ def recommendation_kernel(
     return _row_normalize(raw, fallback), neighbors, candidates
 
 
-def _deposit_hat(
+@lru_cache(maxsize=16)
+def _binomial_coefficients(trials: int) -> FloatArray:
+    values = np.fromiter(
+        (math.comb(trials, count) for count in range(trials + 1)),
+        dtype=float,
+        count=trials + 1,
+    )
+    values.setflags(write=False)
+    return values
+
+
+def _binomial_pmf(trials: int, probability: float) -> FloatArray:
+    """Small-binomial PMF without repeated scipy distribution dispatch."""
+
+    if probability <= 0.0:
+        result = np.zeros(trials + 1, dtype=float)
+        result[0] = 1.0
+        return result
+    if probability >= 1.0:
+        result = np.zeros(trials + 1, dtype=float)
+        result[-1] = 1.0
+        return result
+    counts = np.arange(trials + 1, dtype=float)
+    coefficients = _binomial_coefficients(trials)
+    result = coefficients * probability**counts * (1.0 - probability) ** (
+        trials - counts
+    )
+    return result / result.sum()
+
+
+def _deposit_hat_many(
     probability: FloatArray,
     x: FloatArray,
-    value: float,
-    weight: float,
+    values: FloatArray,
+    weights: FloatArray,
 ) -> None:
-    value = float(np.clip(value, -1.0, 1.0))
-    if value <= x[0]:
-        probability[0] += weight
-    elif value >= x[-1]:
-        probability[-1] += weight
-    else:
-        right = int(np.searchsorted(x, value, side="right"))
-        left = right - 1
-        fraction = (value - x[left]) / (x[right] - x[left])
-        probability[left] += weight * (1.0 - fraction)
-        probability[right] += weight * fraction
+    """Deposit many point masses with the linear hat basis in one batch."""
+
+    values = np.clip(np.asarray(values, dtype=float).ravel(), -1.0, 1.0)
+    weights = np.asarray(weights, dtype=float).ravel()
+    if values.size != weights.size:
+        raise ValueError("values and weights must have equal sizes")
+    if values.size == 0:
+        return
+    low = values <= x[0]
+    high = values >= x[-1]
+    if np.any(low):
+        probability[0] += float(weights[low].sum())
+    if np.any(high):
+        probability[-1] += float(weights[high].sum())
+    middle = ~(low | high)
+    if not np.any(middle):
+        return
+    dx = x[1] - x[0]
+    position = (values[middle] - x[0]) / dx
+    left = np.floor(position).astype(int)
+    fraction = position - left
+    middle_weights = weights[middle]
+    probability += np.bincount(
+        left,
+        weights=middle_weights * (1.0 - fraction),
+        minlength=x.size,
+    )
+    probability += np.bincount(
+        left + 1,
+        weights=middle_weights * fraction,
+        minlength=x.size,
+    )
 
 
-def _conditional_moments(
-    probability: FloatArray, x: FloatArray
+def _conditional_cell_moments(
+    probability: FloatArray,
+    concordance: FloatArray,
+    target_first: FloatArray,
+    target_second: FloatArray,
 ) -> tuple[float, float, float]:
-    total = float(probability.sum())
+    total = float(probability @ concordance)
     if total <= 1e-15:
         return 0.0, 0.0, 0.0
-    conditional = probability / total
-    mean = float(conditional @ x)
-    variance = float(conditional @ ((x - mean) ** 2))
+    mean = float(probability @ target_first) / total
+    second = float(probability @ target_second) / total
+    variance = second - mean * mean
     return min(total, 1.0), mean, max(variance, 0.0)
 
 
 def _opinion_transition(
     parameters: TerminalGeneratorParameters,
     x: FloatArray,
-    state: TerminalState,
     neighbors: FloatArray,
     recommendations: FloatArray,
     candidates: FloatArray,
+    geometry: ConfidenceGeometry,
 ) -> FloatArray:
     size = x.size
     transition = np.zeros((size, size), dtype=float)
+    count_n_axis = np.arange(parameters.mean_degree + 1, dtype=float)
+    count_r_axis = np.arange(parameters.recsys_count + 1, dtype=float)
+    count_n_grid = count_n_axis[:, None]
+    count_r_grid = count_r_axis[None, :]
+    count_grid = count_n_grid + count_r_grid
     for source in range(size):
-        concordant = np.abs(x - x[source]) <= parameters.epsilon
-        p_n, mean_n, var_n = _conditional_moments(neighbors[source] * concordant, x)
-        p_r, mean_r, var_r = _conditional_moments(
-            recommendations[source] * concordant, x
+        concordant = geometry.concordance[source]
+        first = geometry.target_first[source]
+        second = geometry.target_second[source]
+        p_n, mean_n, var_n = _conditional_cell_moments(
+            neighbors[source], concordant, first, second
         )
-        pmf_n = binom.pmf(
-            np.arange(parameters.mean_degree + 1), parameters.mean_degree, p_n
+        p_r, mean_r, var_r = _conditional_cell_moments(
+            recommendations[source], concordant, first, second
         )
-        pmf_r = binom.pmf(
-            np.arange(parameters.recsys_count + 1), parameters.recsys_count, p_r
-        )
-        available = float(candidates[source, concordant].sum())
+        pmf_n = _binomial_pmf(parameters.mean_degree, p_n)
+        pmf_r = _binomial_pmf(parameters.recsys_count, p_r)
+        available = float(candidates[source] @ concordant)
         output = transition[source]
-        for count_n, probability_n in enumerate(pmf_n):
-            if probability_n < 1e-14:
-                continue
-            for count_r, probability_r in enumerate(pmf_r):
-                weight = float(probability_n * probability_r)
-                if weight < 1e-14:
-                    continue
-                count = count_n + count_r
-                if count == 0:
-                    output[source] += weight
-                    continue
-                target_mean = (count_n * mean_n + count_r * mean_r) / count
-                finite = 1.0
-                if count_r > 0 and available > 1:
-                    finite = max((available - count_r) / (available - 1.0), 0.0)
-                variance = (count_n * var_n + count_r * var_r * finite) / count**2
-                mean = (1.0 - parameters.influence) * x[
-                    source
-                ] + parameters.influence * target_mean
-                standard_deviation = parameters.influence * math.sqrt(variance)
-                if standard_deviation <= 1e-8:
-                    _deposit_hat(output, x, mean, weight)
-                else:
-                    for node, quadrature_weight in zip(
-                        _GH_NODES, _GH_WEIGHTS, strict=True
-                    ):
-                        _deposit_hat(
-                            output,
-                            x,
-                            mean + math.sqrt(2.0) * standard_deviation * float(node),
-                            weight * float(quadrature_weight),
-                        )
+        weights = pmf_n[:, None] * pmf_r[None, :]
+        output[source] += float(weights[0, 0])
+        active = (weights >= 1e-14) & (count_grid > 0)
+        counts = count_grid[active]
+        target_mean = (
+            count_n_grid * mean_n + count_r_grid * mean_r
+        )[active] / counts
+        finite = np.ones_like(count_grid)
+        if available > 1.0:
+            finite = np.maximum(
+                (available - count_r_grid) / (available - 1.0), 0.0
+            )
+        variance = (
+            count_n_grid * var_n + count_r_grid * var_r * finite
+        )[active] / counts**2
+        means = (1.0 - parameters.influence) * x[source] + (
+            parameters.influence * target_mean
+        )
+        standard_deviations = parameters.influence * np.sqrt(
+            np.maximum(variance, 0.0)
+        )
+        active_weights = weights[active]
+        deterministic = standard_deviations <= 1e-8
+        stochastic = ~deterministic
+        quadrature_values = (
+            means[stochastic, None]
+            + math.sqrt(2.0)
+            * standard_deviations[stochastic, None]
+            * _GH_NODES[None, :]
+        )
+        quadrature_weights = active_weights[stochastic, None] * _GH_WEIGHTS[None, :]
+        _deposit_hat_many(
+            output,
+            x,
+            np.concatenate((means[deterministic], quadrature_values.ravel())),
+            np.concatenate(
+                (active_weights[deterministic], quadrature_weights.ravel())
+            ),
+        )
         output[:] = np.maximum(output, 0.0)
         output[:] /= output.sum()
     return transition
@@ -381,14 +453,14 @@ def _sample_edges(
 
 def _tau_leap_rewiring(
     parameters: TerminalGeneratorParameters,
-    x: FloatArray,
     state: TerminalState,
     neighbors: FloatArray,
     recommendations: FloatArray,
     rng: np.random.Generator,
+    geometry: ConfidenceGeometry,
 ) -> tuple[FloatArray, int, float, float]:
-    concordant = np.abs(x[:, None] - x[None, :]) <= parameters.epsilon
-    discordant = ~concordant
+    concordant = geometry.concordance
+    discordant = 1.0 - concordant
     p_discordant = np.sum(discordant * neighbors, axis=1)
     p_rec_concordant = np.sum(concordant * recommendations, axis=1)
     eligibility = (1.0 - (1.0 - p_discordant) ** parameters.mean_degree) * (
@@ -550,6 +622,7 @@ def _fast_absorb(
     x: FloatArray,
     state: TerminalState,
     rng: np.random.Generator,
+    geometry: ConfidenceGeometry,
 ) -> tuple[TerminalState, int, int, float, bool, float]:
     events = 0
     cap_sum = 0.0
@@ -558,7 +631,7 @@ def _fast_absorb(
     for substep in range(1, parameters.fast_max_steps + 1):
         recommendations, neighbors, _ = recommendation_kernel(parameters, x, state)
         edge, count, cap, residual = _tau_leap_rewiring(
-            parameters, x, state, neighbors, recommendations, rng
+            parameters, state, neighbors, recommendations, rng, geometry
         )
         wedge, score2, score4 = _update_moments_after_rewiring(parameters, state, edge)
         state = TerminalState(state.rho, edge, wedge, score2, score4)
@@ -580,6 +653,7 @@ def run_terminal_generator(
 
     parameters.validate()
     x = opinion_grid(parameters.grid_size)
+    geometry = confidence_geometry(x, parameters.epsilon, parameters.confidence_mode)
     state = initialize_terminal_state(parameters)
     rng = np.random.default_rng(parameters.seed + 3_000_000_000)
     total_events = total_substeps = max_hits = 0
@@ -598,7 +672,7 @@ def run_terminal_generator(
     for step in range(1, parameters.max_steps + 1):
         if fast_applied:
             state, substeps, events, fast_cap, hit, residual = _fast_absorb(
-                parameters, x, state, rng
+                parameters, x, state, rng, geometry
             )
             total_substeps += substeps
             total_events += events
@@ -613,11 +687,11 @@ def run_terminal_generator(
         # from the same old state.  In the fast-slow kernel this old state is
         # the conditionally absorbed fast state.
         transition = _opinion_transition(
-            parameters, x, state, neighbors, recommendations, candidates
+            parameters, x, neighbors, recommendations, candidates, geometry
         )
         if not fast_applied:
             edge, events, cap, residual = _tau_leap_rewiring(
-                parameters, x, state, neighbors, recommendations, rng
+                parameters, state, neighbors, recommendations, rng, geometry
             )
             wedge, score2, score4 = _update_moments_after_rewiring(
                 parameters, state, edge

@@ -26,6 +26,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import solve_banded
 
+from ..opinion_cells import ConfidenceMode, confidence_geometry
 from .directional_wedge import (
     DirectionalWedgeState,
     independent_directional_wedge,
@@ -34,7 +35,6 @@ from .directional_wedge import (
 )
 
 FloatArray = NDArray[np.float64]
-BoolArray = NDArray[np.bool_]
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,7 @@ class KineticParameters:
     dt: float = 1.0
     steps: int = 1200
     record_every: int = 5
+    confidence_mode: ConfidenceMode = "cell_average"
 
     def validate(self) -> None:
         continuous = {
@@ -138,6 +139,8 @@ class KineticParameters:
             raise ValueError("dt, steps, and record_every must be positive")
         if self.dt * self.rewiring > 1 + 1e-12:
             raise ValueError("dt * rewiring must not exceed 1")
+        if self.confidence_mode not in {"cell_average", "center"}:
+            raise ValueError(f"unknown confidence mode: {self.confidence_mode}")
         if self.recsys.casefold() not in {
             "random",
             "rand",
@@ -184,8 +187,8 @@ class KineticTrajectory:
 class _GridOperators:
     """Time-independent grid arrays reused by every solver step."""
 
-    delta: FloatArray
-    concordant: BoolArray
+    concordant: FloatArray
+    displacement: FloatArray
     opinion_score: FloatArray | None
 
 
@@ -194,7 +197,8 @@ def _build_grid_operators(
     x: FloatArray,
 ) -> _GridOperators:
     delta = x[None, :] - x[:, None]
-    concordant = np.abs(delta) <= params.epsilon
+    geometry = confidence_geometry(x, params.epsilon, params.confidence_mode)
+    concordant = geometry.concordance
     recsys = params.recsys.casefold()
     if recsys in {"opinion", "opinionm9", "op"}:
         opinion_score = np.exp(-0.5 * (delta / params.opinion_bandwidth) ** 2)
@@ -208,7 +212,7 @@ def _build_grid_operators(
         )
     else:
         opinion_score = None
-    return _GridOperators(delta, concordant, opinion_score)
+    return _GridOperators(concordant, geometry.displacement, opinion_score)
 
 
 def _row_normalize(values: FloatArray, fallback: FloatArray) -> FloatArray:
@@ -360,11 +364,10 @@ def _compute_fields(
         random_slots * random_kernel + core_slots * core_kernel
     ) / params.recsys_count
 
-    delta = operators.delta
     concordant = operators.concordant
     visible_mass = k * neighbors + params.recsys_count * recommendations
     denominator = np.sum(concordant * visible_mass, axis=1)
-    numerator = np.sum(concordant * delta * visible_mass, axis=1)
+    numerator = np.sum(operators.displacement * visible_mass, axis=1)
     velocity = params.influence * np.divide(
         numerator,
         denominator,
@@ -372,7 +375,7 @@ def _compute_fields(
         where=denominator > 1e-15,
     )
 
-    discordant = ~concordant
+    discordant = 1.0 - concordant
     discordant_probability = np.sum(discordant * neighbors, axis=1)
     concordant_random_probability = np.sum(concordant * random_kernel, axis=1)
     concordant_core_probability = np.sum(concordant * core_kernel, axis=1)

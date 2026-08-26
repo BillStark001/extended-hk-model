@@ -19,6 +19,7 @@ endpoints.  One-for-one rewiring is an explicit conservative source step.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -555,8 +556,12 @@ def _validate_state(
     return rho, edge
 
 
-def solve(params: KineticParameters) -> KineticTrajectory:
-    """Solve and record the mesoscopic density dynamics."""
+def solve(
+    params: KineticParameters,
+    *,
+    record_steps: Sequence[int] | None = None,
+) -> KineticTrajectory:
+    """Solve and record the mesoscopic dynamics at regular or custom steps."""
 
     params.validate()
     dx = 2.0 / params.grid_size
@@ -569,10 +574,21 @@ def solve(params: KineticParameters) -> KineticTrajectory:
         independent_directional_wedge(rho, edge) if uses_l1 else None
     )
 
-    record_steps = list(range(0, params.steps + 1, params.record_every))
-    if record_steps[-1] != params.steps:
-        record_steps.append(params.steps)
-    record_set = set(record_steps)
+    if record_steps is None:
+        selected_steps = list(range(0, params.steps + 1, params.record_every))
+    else:
+        invalid = [
+            step
+            for step in record_steps
+            if isinstance(step, (bool, np.bool_))
+            or not isinstance(step, (int, np.integer))
+            or not 0 <= int(step) <= params.steps
+        ]
+        if invalid:
+            raise ValueError("record_steps must contain integers in [0, steps]")
+        selected_steps = sorted({int(step) for step in record_steps})
+    selected_steps = sorted({0, params.steps, *selected_steps})
+    record_set = set(selected_steps)
 
     times: list[float] = []
     rhos: list[FloatArray] = []

@@ -11,7 +11,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from ehk.common.numerics import estimate_potential_from_force
+from ehk.metrics.landscape_diagnostics import potential_from_force as _potential_from_force
 
 
 CMAP_NAME = "managua"
@@ -23,21 +23,8 @@ def potential_from_force(
     *,
     center: bool = True,
 ) -> np.ndarray:
-  """Integrate one or more force curves with the repository's trapezoid rule."""
-  x_values = np.asarray(x, dtype=float)
-  force_values = np.asarray(force, dtype=float)
-  if force_values.shape[-1] != x_values.size:
-    raise ValueError("the force curve's last axis must match x")
-
-  flat_force = force_values.reshape((-1, x_values.size))
-  flat_potential = np.stack([
-      estimate_potential_from_force(x_values, row)
-      for row in flat_force
-  ])
-  potential = flat_potential.reshape(force_values.shape)
-  if center:
-    potential -= np.mean(potential, axis=-1, keepdims=True)
-  return potential
+  """Backward-compatible plotting-level alias for the numerical helper."""
+  return _potential_from_force(x, force, center=center)
 
 
 def format_landscape_axis(

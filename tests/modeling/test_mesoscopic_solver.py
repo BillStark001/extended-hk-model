@@ -25,6 +25,17 @@ class KineticSolverTests(unittest.TestCase):
         self.assertAlmostEqual(float(trajectory.x[-1]), 1.0 - dx / 2)
         np.testing.assert_allclose(np.diff(trajectory.x), dx, atol=1e-15)
 
+    def test_custom_record_steps_include_endpoints(self):
+        trajectory = solve(
+            KineticParameters(grid_size=25, steps=10, record_every=7),
+            record_steps=(1, 2, 5),
+        )
+        np.testing.assert_array_equal(trajectory.time, [0, 1, 2, 5, 10])
+
+    def test_invalid_custom_record_step_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "record_steps"):
+            solve(KineticParameters(steps=10), record_steps=(1, 11))
+
     def test_uniform_homophily_baseline(self):
         self.assertAlmostEqual(
             uniform_concordance_probability(0.45),

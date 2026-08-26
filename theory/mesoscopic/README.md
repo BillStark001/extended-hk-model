@@ -44,7 +44,17 @@ PYTHONPATH=src:. python -m theory.mesoscopic.recommender_scan --jobs 4
 PYTHONPATH=src:. python -m theory.mesoscopic.spectrum_check
 PYTHONPATH=src:. python -m theory.mesoscopic.joint_spectrum
 PYTHONPATH=src:. python -m theory.mesoscopic.spectrum_steady_states --jobs 3
+PYTHONPATH=src:. python -m theory.mesoscopic.l1_comparison
 ```
+
+`l1_comparison` holds every numerical choice fixed and compares the existing
+pair-only `structure_random_l0` kernel with `structure_random_l1`.  L1 evolves
+the four directed wedge channels `out/out`, `out/in`, `in/out`, and `in/in`
+through the same conservative finite-volume transport used by `rho` and
+`edge`.  Rewiring uses a documented turnover-to-independent-target moment
+closure.  L0 remains a supported kernel.  L1 accepts only structural-score
+power one; powers such as four require additional score moments and are not
+silently approximated by the first wedge moment.
 
 The paper's resolution check is:
 

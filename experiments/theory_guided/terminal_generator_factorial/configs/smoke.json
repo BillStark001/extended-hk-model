@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "name": "terminal_generator_factorial_smoke",
+  "replicates": 2,
+  "base_seed": 730001,
+  "cases": [
+    {"key": "rewiring_dominant", "influence": 0.01, "rewiring": 0.2}
+  ],
+  "configurations": [
+    {"key": "structure_random_zeta1", "recsys": "structure_random", "steepness": 1.0}
+  ],
+  "model": {
+    "population": 80,
+    "grid_size": 9,
+    "mean_degree": 6,
+    "recsys_count": 4,
+    "epsilon": 0.45,
+    "max_steps": 20,
+    "fast_slow_ratio_threshold": 10.0,
+    "fast_max_steps": 100,
+    "fast_zero_checks": 4
+  }
+}

@@ -26,6 +26,12 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import solve_banded
 
+from .directional_wedge import (
+    DirectionalWedgeState,
+    independent_directional_wedge,
+    mix_after_rewiring,
+    transport_directional_wedge,
+)
 
 FloatArray = NDArray[np.float64]
 BoolArray = NDArray[np.bool_]
@@ -80,13 +86,11 @@ class KineticParameters:
             "dt": self.dt,
         }
         nonfinite = [
-            name for name, value in continuous.items()
-            if not np.isfinite(value)
+            name for name, value in continuous.items() if not np.isfinite(value)
         ]
         if nonfinite:
             raise ValueError(
-                "continuous parameters must be finite: "
-                + ", ".join(nonfinite)
+                "continuous parameters must be finite: " + ", ".join(nonfinite)
             )
         integer_parameters = {
             "grid_size": self.grid_size,
@@ -95,14 +99,14 @@ class KineticParameters:
             "record_every": self.record_every,
         }
         invalid_integers = [
-            name for name, value in integer_parameters.items()
+            name
+            for name, value in integer_parameters.items()
             if isinstance(value, (bool, np.bool_))
             or not isinstance(value, (int, np.integer))
         ]
         if invalid_integers:
             raise ValueError(
-                "count parameters must be integers: "
-                + ", ".join(invalid_integers)
+                "count parameters must be integers: " + ", ".join(invalid_integers)
             )
         if self.grid_size < 11 or self.grid_size % 2 == 0:
             raise ValueError("grid_size must be an odd integer >= 11")
@@ -135,11 +139,30 @@ class KineticParameters:
         if self.dt * self.rewiring > 1 + 1e-12:
             raise ValueError("dt * rewiring must not exceed 1")
         if self.recsys.casefold() not in {
-            "random", "rand", "opinion", "op", "structure", "st",
-            "opinionm9", "structurem9", "opinionrandom",
-            "opinion_random", "structure_random_l0", "structurerandoml0",
+            "random",
+            "rand",
+            "opinion",
+            "op",
+            "structure",
+            "st",
+            "opinionm9",
+            "structurem9",
+            "opinionrandom",
+            "opinion_random",
+            "structure_random_l0",
+            "structurerandoml0",
+            "structure_random_l1",
+            "structurerandoml1",
         }:
             raise ValueError(f"unsupported recommendation system: {self.recsys}")
+        if self.recsys.casefold() in {
+            "structure_random_l1",
+            "structurerandoml1",
+        } and not np.isclose(self.recommendation_steepness, 1.0):
+            raise ValueError(
+                "structure_random_l1 closes only the first score moment; "
+                "recommendation_steepness must equal 1"
+            )
 
 
 @dataclass
@@ -151,6 +174,7 @@ class KineticTrajectory:
     velocity: FloatArray
     edge: FloatArray
     rewiring_flux: FloatArray
+    structural_score: FloatArray | None = None
 
     def metadata(self) -> dict[str, Any]:
         return asdict(self.parameters)
@@ -173,14 +197,15 @@ def _build_grid_operators(
     concordant = np.abs(delta) <= params.epsilon
     recsys = params.recsys.casefold()
     if recsys in {"opinion", "opinionm9", "op"}:
-        opinion_score = np.exp(
-            -0.5 * (delta / params.opinion_bandwidth) ** 2
-        )
+        opinion_score = np.exp(-0.5 * (delta / params.opinion_bandwidth) ** 2)
     elif recsys in {"opinionrandom", "opinion_random"}:
-        opinion_score = np.maximum(
-            1.0 - np.abs(delta) / params.opinion_tolerance,
-            0.0,
-        ) ** params.recommendation_steepness
+        opinion_score = (
+            np.maximum(
+                1.0 - np.abs(delta) / params.opinion_tolerance,
+                0.0,
+            )
+            ** params.recommendation_steepness
+        )
     else:
         opinion_score = None
     return _GridOperators(delta, concordant, opinion_score)
@@ -217,6 +242,7 @@ def _recommendation_channels(
     rho: FloatArray,
     neighbors: FloatArray,
     opinion_score: FloatArray | None = None,
+    structural_score: FloatArray | None = None,
 ) -> tuple[FloatArray, FloatArray, int, int]:
     """Return random/core kernels and their finite recommendation-slot counts.
 
@@ -245,10 +271,13 @@ def _recommendation_channels(
         score = opinion_score
         if score is None:
             delta = x[None, :] - x[:, None]
-            score = np.maximum(
-                1.0 - np.abs(delta) / params.opinion_tolerance,
-                0.0,
-            ) ** params.recommendation_steepness
+            score = (
+                np.maximum(
+                    1.0 - np.abs(delta) / params.opinion_tolerance,
+                    0.0,
+                )
+                ** params.recommendation_steepness
+            )
         weighted = _row_normalize(score * rho[None, :], random_kernel)
         beta = params.recommendation_random_ratio
         core = (1.0 - beta) * weighted + beta * random_kernel
@@ -261,17 +290,27 @@ def _recommendation_channels(
         # integer common-neighbor count; replacing its steepness power by the
         # power of the expected overlap is an explicit moment closure.
         score = np.maximum(neighbors @ neighbors.T, 0.0)
-        score = score ** params.recommendation_steepness
+        score = score**params.recommendation_steepness
         weighted = _row_normalize(score * rho[None, :], random_kernel)
+        beta = params.recommendation_random_ratio
+        core = (1.0 - beta) * weighted + beta * random_kernel
+    elif recsys in {"structure_random_l1", "structurerandoml1"}:
+        if structural_score is None:
+            raise ValueError(
+                "structure_random_l1 requires a directional-wedge score mass"
+            )
+        if structural_score.shape != (x.size, x.size):
+            raise ValueError("structural score has incompatible shape")
+        # The L1 score mass already contains the target-bin candidate mass;
+        # unlike the L0 conditional-overlap proxy it is not multiplied by rho.
+        weighted = _row_normalize(structural_score, random_kernel)
         beta = params.recommendation_random_ratio
         core = (1.0 - beta) * weighted + beta * random_kernel
     else:
         raise ValueError(f"unsupported recommendation system: {params.recsys}")
 
     if recsys in {"opinionm9", "structurem9"}:
-        random_slots = int(
-            np.floor(params.recsys_count * params.random_mix + 0.5)
-        )
+        random_slots = int(np.floor(params.recsys_count * params.random_mix + 0.5))
         random_slots = min(max(random_slots, 0), params.recsys_count)
     else:
         random_slots = 0
@@ -284,15 +323,14 @@ def _recommendation_kernel(
     x: FloatArray,
     rho: FloatArray,
     neighbors: FloatArray,
+    structural_score: FloatArray | None = None,
 ) -> FloatArray:
     """Return the expected source distribution of one recommendation slot."""
 
     random_kernel, core, random_slots, core_slots = _recommendation_channels(
-        params, x, rho, neighbors
+        params, x, rho, neighbors, structural_score=structural_score
     )
-    return (
-        random_slots * random_kernel + core_slots * core
-    ) / params.recsys_count
+    return (random_slots * random_kernel + core_slots * core) / params.recsys_count
 
 
 def _compute_fields(
@@ -301,6 +339,7 @@ def _compute_fields(
     rho: FloatArray,
     edge: FloatArray,
     operators: _GridOperators | None = None,
+    structural_score: FloatArray | None = None,
 ) -> tuple[FloatArray, FloatArray]:
     """Compute opinion velocity and the rewiring gain/loss field."""
 
@@ -309,14 +348,13 @@ def _compute_fields(
 
     k = params.mean_degree
     neighbors = _conditional_neighbors(rho, edge, k)
-    random_kernel, core_kernel, random_slots, core_slots = (
-        _recommendation_channels(
-            params,
-            x,
-            rho,
-            neighbors,
-            opinion_score=operators.opinion_score,
-        )
+    random_kernel, core_kernel, random_slots, core_slots = _recommendation_channels(
+        params,
+        x,
+        rho,
+        neighbors,
+        opinion_score=operators.opinion_score,
+        structural_score=structural_score,
     )
     recommendations = (
         random_slots * random_kernel + core_slots * core_kernel
@@ -336,12 +374,8 @@ def _compute_fields(
 
     discordant = ~concordant
     discordant_probability = np.sum(discordant * neighbors, axis=1)
-    concordant_random_probability = np.sum(
-        concordant * random_kernel, axis=1
-    )
-    concordant_core_probability = np.sum(
-        concordant * core_kernel, axis=1
-    )
+    concordant_random_probability = np.sum(concordant * random_kernel, axis=1)
+    concordant_core_probability = np.sum(concordant * core_kernel, axis=1)
     concordant_rec_probability = (
         random_slots * concordant_random_probability
         + core_slots * concordant_core_probability
@@ -365,9 +399,7 @@ def _compute_fields(
 
     # Probability that finite followee/recommendation samples contain at
     # least one eligible item in each channel.
-    eligibility = (
-        1 - np.power(1 - discordant_probability, params.mean_degree)
-    ) * (
+    eligibility = (1 - np.power(1 - discordant_probability, params.mean_degree)) * (
         1
         - np.power(1 - concordant_random_probability, random_slots)
         * np.power(1 - concordant_core_probability, core_slots)
@@ -425,9 +457,7 @@ def _solve_tridiagonal(
     bands[0, 1:] = upper
     bands[1] = diagonal
     bands[2, :-1] = lower
-    solution = solve_banded(
-        (1, 1), bands, rhs, overwrite_ab=True, check_finite=False
-    )
+    solution = solve_banded((1, 1), bands, rhs, overwrite_ab=True, check_finite=False)
     return solution[:, 0] if vector_input else solution
 
 
@@ -448,14 +478,40 @@ def _advance_transport_diffusion(
     algebraically from the input state.
     """
 
-    lower, diagonal, upper = _finite_volume_system(
-        velocity, diffusion, dx, dt
+    lower, diagonal, upper = _finite_volume_system(velocity, diffusion, dx, dt)
+    return _advance_transport_diffusion_with_system(rho, edge, lower, diagonal, upper)
+
+
+def _transport_array_axis(
+    values: FloatArray,
+    axis: int,
+    lower: FloatArray,
+    diagonal: FloatArray,
+    upper: FloatArray,
+) -> FloatArray:
+    """Apply one finite-volume system along an arbitrary array axis."""
+
+    moved = np.moveaxis(np.asarray(values, dtype=float), axis, 0)
+    original_shape = moved.shape
+    right_hand_side = moved.reshape(original_shape[0], -1)
+    solution = _solve_tridiagonal(lower, diagonal, upper, right_hand_side).reshape(
+        original_shape
     )
+    return np.moveaxis(solution, 0, axis)
+
+
+def _advance_transport_diffusion_with_system(
+    rho: FloatArray,
+    edge: FloatArray,
+    lower: FloatArray,
+    diagonal: FloatArray,
+    upper: FloatArray,
+) -> tuple[FloatArray, FloatArray]:
+    """Advance node and edge states with one precomputed FV system."""
+
     rho_next = _solve_tridiagonal(lower, diagonal, upper, rho)
     edge_after_x = _solve_tridiagonal(lower, diagonal, upper, edge)
-    edge_next = _solve_tridiagonal(
-        lower, diagonal, upper, edge_after_x.T
-    ).T
+    edge_next = _solve_tridiagonal(lower, diagonal, upper, edge_after_x.T).T
     return rho_next, edge_next
 
 
@@ -487,9 +543,7 @@ def _validate_state(
         edge[edge < 0] = 0.0
 
     mass_error = abs(float(rho.sum()) - 1.0)
-    row_error = float(
-        np.max(np.abs(edge.sum(axis=1) - mean_degree * rho))
-    )
+    row_error = float(np.max(np.abs(edge.sum(axis=1) - mean_degree * rho)))
     if mass_error > tolerance or row_error > tolerance:
         raise FloatingPointError(
             "mesoscopic update violated mass/out-degree invariants: "
@@ -507,6 +561,10 @@ def solve(params: KineticParameters) -> KineticTrajectory:
     rho = np.full(params.grid_size, 1 / params.grid_size, dtype=float)
     edge = params.mean_degree * np.outer(rho, rho)
     operators = _build_grid_operators(params, x)
+    uses_l1 = params.recsys.casefold() in {"structure_random_l1", "structurerandoml1"}
+    wedge: DirectionalWedgeState | None = (
+        independent_directional_wedge(rho, edge) if uses_l1 else None
+    )
 
     record_steps = list(range(0, params.steps + 1, params.record_every))
     if record_steps[-1] != params.steps:
@@ -518,22 +576,37 @@ def solve(params: KineticParameters) -> KineticTrajectory:
     velocities: list[FloatArray] = []
     edges: list[FloatArray] = []
     fluxes: list[FloatArray] = []
+    structural_scores: list[FloatArray] = []
 
     def record(step: int) -> None:
+        structural_score = wedge.union_score_mass() if wedge is not None else None
         velocity, flux = _compute_fields(
-            params, x, rho, edge, operators=operators
+            params,
+            x,
+            rho,
+            edge,
+            operators=operators,
+            structural_score=structural_score,
         )
         times.append(step * params.dt)
         rhos.append(rho.copy())
         velocities.append(velocity.copy())
         edges.append(edge.copy())
         fluxes.append(flux.copy())
+        if structural_score is not None:
+            structural_scores.append(structural_score.copy())
 
     record(0)
 
     for step in range(1, params.steps + 1):
+        structural_score = wedge.union_score_mass() if wedge is not None else None
         velocity, rewiring_flux = _compute_fields(
-            params, x, rho, edge, operators=operators
+            params,
+            x,
+            rho,
+            edge,
+            operators=operators,
+            structural_score=structural_score,
         )
 
         # Lie splitting of the PDE: a conservative rewiring source step,
@@ -541,14 +614,25 @@ def solve(params: KineticParameters) -> KineticTrajectory:
         # source and target opinion coordinates.  All coefficients are frozen
         # at the old state, so the nonlinear method is first order in time.
         edge_with_rewiring = edge + params.dt * rewiring_flux
-        rho, edge = _advance_transport_diffusion(
-            rho,
-            edge_with_rewiring,
-            velocity,
-            params.noise_diffusion,
-            dx,
-            params.dt,
+        wedge_after_rewiring = (
+            mix_after_rewiring(wedge, rho, edge, edge_with_rewiring)
+            if wedge is not None
+            else None
         )
+        lower, diagonal, upper = _finite_volume_system(
+            velocity, params.noise_diffusion, dx, params.dt
+        )
+        rho, edge = _advance_transport_diffusion_with_system(
+            rho, edge_with_rewiring, lower, diagonal, upper
+        )
+        if wedge_after_rewiring is not None:
+            wedge = transport_directional_wedge(
+                wedge_after_rewiring,
+                lambda values, axis, lo=lower, diag=diagonal, up=upper: (
+                    _transport_array_axis(values, axis, lo, diag, up)
+                ),
+            )
+            wedge.validate(params.grid_size)
         rho, edge = _validate_state(rho, edge, params.mean_degree)
 
         if step in record_set:
@@ -562,4 +646,5 @@ def solve(params: KineticParameters) -> KineticTrajectory:
         velocity=np.asarray(velocities),
         edge=np.asarray(edges),
         rewiring_flux=np.asarray(fluxes),
+        structural_score=(np.asarray(structural_scores) if structural_scores else None),
     )

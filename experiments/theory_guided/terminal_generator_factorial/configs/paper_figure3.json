@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "name": "terminal_generator_factorial_paper_figure3",
+  "replicates": 40,
+  "base_seed": 20260818,
+  "cases": [
+    {"key": "low_rewiring", "influence": 0.046415888336127795, "rewiring": 0.001},
+    {"key": "balanced", "influence": 0.046415888336127795, "rewiring": 0.046415888336127795},
+    {"key": "influence_dominant", "influence": 0.21544346900318845, "rewiring": 0.004641588833612777},
+    {"key": "rewiring_dominant", "influence": 0.004641588833612777, "rewiring": 0.21544346900318845}
+  ],
+  "configurations": [
+    {"key": "random", "recsys": "random", "steepness": 1.0},
+    {"key": "opinion_random_zeta1", "recsys": "opinion_random", "steepness": 1.0},
+    {"key": "opinion_random_zeta4", "recsys": "opinion_random", "steepness": 4.0},
+    {"key": "structure_random_zeta1", "recsys": "structure_random", "steepness": 1.0},
+    {"key": "structure_random_zeta4", "recsys": "structure_random", "steepness": 4.0}
+  ],
+  "model": {
+    "population": 500,
+    "grid_size": 15,
+    "mean_degree": 15,
+    "recsys_count": 10,
+    "epsilon": 0.45,
+    "max_steps": 20000,
+    "fast_slow_ratio_threshold": 20.0,
+    "fast_max_steps": 20000,
+    "fast_zero_checks": 20
+  }
+}

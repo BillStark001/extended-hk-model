@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "name": "terminal_generator_factorial_historical_12",
+  "replicates": 40,
+  "base_seed": 730001,
+  "cases": [
+    {"key": "no_rewiring", "influence": 0.05, "rewiring": 0.0},
+    {"key": "balanced", "influence": 0.05, "rewiring": 0.05},
+    {"key": "influence_dominant", "influence": 0.3, "rewiring": 0.005},
+    {"key": "rewiring_dominant", "influence": 0.005, "rewiring": 0.3}
+  ],
+  "configurations": [
+    {"key": "random", "recsys": "random", "steepness": 1.0},
+    {"key": "opinion_random", "recsys": "opinion_random", "steepness": 1.0},
+    {"key": "structure_random", "recsys": "structure_random", "steepness": 1.0}
+  ],
+  "model": {
+    "population": 500,
+    "grid_size": 15,
+    "mean_degree": 15,
+    "recsys_count": 10,
+    "epsilon": 0.45,
+    "max_steps": 20000,
+    "fast_slow_ratio_threshold": 20.0,
+    "fast_max_steps": 20000,
+    "fast_zero_checks": 20
+  }
+}

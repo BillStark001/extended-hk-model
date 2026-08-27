@@ -312,6 +312,26 @@ def _selected_rates(values: list[float] | None) -> np.ndarray:
   return rates
 
 
+def _terminate_executor(
+    executor: ProcessPoolExecutor,
+    futures: list[object],
+) -> None:
+  """Stop active workers promptly while leaving atomic checkpoints intact."""
+
+  for future in futures:
+    future.cancel()
+  # ProcessPoolExecutor has no public immediate-stop operation.  Capture the
+  # worker handles before shutdown clears them, terminate only this pool, and
+  # then reap them.  This prevents a first Ctrl-C from waiting for several
+  # long B=81 L1 trajectories to finish.
+  process_map = getattr(executor, "_processes", None)
+  processes = tuple(process_map.values()) if process_map else ()
+  for process in processes:
+    if process.is_alive():
+      process.terminate()
+  executor.shutdown(wait=True, cancel_futures=True)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
   parser = argparse.ArgumentParser(description=__doc__)
   parser.add_argument("--grid-size", type=int, default=81)
@@ -348,6 +368,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
       "--skip-analysis",
       action="store_true",
       help="write numerical outputs without fitting offsets or plotting",
+  )
+  parser.add_argument(
+      "--dry-run",
+      action="store_true",
+      help="validate the protocol/checkpoints and report pending cells only",
   )
   return parser.parse_args(argv)
 
@@ -426,6 +451,8 @@ def main(argv: list[str] | None = None) -> None:
       f"pending={len(pending)} total={total}",
       flush=True,
   )
+  if args.dry_run:
+    return
 
   def accept(cell: TimescaleCell) -> None:
     key = cell.configuration, cell.q_index, cell.alpha_index
@@ -458,19 +485,29 @@ def main(argv: list[str] | None = None) -> None:
           )
       )
   else:
-    with ProcessPoolExecutor(max_workers=args.jobs) as executor:
-      future_to_case = {
-          executor.submit(
-              solve_cell,
-              *case,
-              base,
-              selected_steps,
-              args.probe_dt,
-          ): case
-          for case in pending
-      }
+    executor = ProcessPoolExecutor(max_workers=args.jobs)
+    future_to_case = {
+        executor.submit(
+            solve_cell,
+            *case,
+            base,
+            selected_steps,
+            args.probe_dt,
+        ): case
+        for case in pending
+    }
+    try:
       for future in as_completed(future_to_case):
         accept(future.result())
+    except KeyboardInterrupt:
+      _terminate_executor(executor, list(future_to_case))
+      print(
+          f"interrupted; preserved {len(completed)}/{total} atomic checkpoints",
+          flush=True,
+      )
+      raise SystemExit(130) from None
+    else:
+      executor.shutdown(wait=True)
 
   cells = list(completed.values())
   if len(cells) != total:

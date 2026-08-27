@@ -30,3 +30,15 @@ PYTHONPATH=src:. python -m experiments.theory_guided.macroscopic_timescale_ratio
 
 Each completed cell is atomically checkpointed under `cells/`.  A protocol
 digest prevents accidental resume across incompatible parameters.
+
+Audit an interrupted output directory without starting any worker:
+
+```bash
+PYTHONPATH=src:. python -m experiments.theory_guided.macroscopic_timescale_ratio.run \
+  --grid-size 81 --jobs 8 --output-dir /path/to/artifacts/macroscopic_timescale_ratio \
+  --dry-run
+```
+
+Rerunning the original command validates the protocol and skips every valid
+cell checkpoint.  A `Ctrl-C` terminates only this experiment's worker pool;
+already renamed JSON checkpoints remain usable.

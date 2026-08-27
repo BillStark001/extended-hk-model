@@ -112,6 +112,7 @@ class MacroscopicTimescaleRatioTests(unittest.TestCase):
             ]
             main(arguments)
             main(arguments)
+            main([*arguments, "--dry-run"])
             self.assertTrue((output / "protocol.json").is_file())
             self.assertTrue((output / "timescale_ratio.npz").is_file())
             self.assertEqual(len(list((output / "cells" / "random").glob("*.json"))), 4)

@@ -14,19 +14,23 @@ from .landscape_diagnostics import (
 )
 from .macroscopic_timescale import (
     ChannelContributionSeries,
+    ChannelProgressSnapshot,
     ChannelWindowSummary,
     calculate_channel_contributions,
+    calculate_channel_progress_snapshots,
     summarize_channel_window,
 )
 
 __all__ = [
     "ChannelContributionSeries",
+    "ChannelProgressSnapshot",
     "ChannelWindowSummary",
     "DensityIndexCalculator",
     "IndexSeries",
     "LandscapeSeries",
     "LandscapeSnapshot",
     "calculate_channel_contributions",
+    "calculate_channel_progress_snapshots",
     "calculate_index_series",
     "potential_from_force",
     "quantify_landscape",

@@ -52,10 +52,182 @@ class ChannelWindowSummary:
     gamma_at_window: float
 
 
+@dataclass(frozen=True)
+class ChannelProgressSnapshot:
+    """Operator-resolved rates at one interpolated macro-progress level.
+
+    Progress is ``u = I_p + I_h``.  The two channel rates are evaluated only
+    at the recorded states bracketing ``u`` and linearly interpolated in
+    progress, so callers need not probe every state in a long trajectory.
+    """
+
+    progress_threshold: float
+    time: float
+    opinion_polarization_rate: float
+    rewiring_homophily_rate: float
+    gamma: float
+    reached: bool
+    lower_record: int
+    upper_record: int
+    interpolation_fraction: float
+
+
 def _ratio(numerator: float, denominator: float, floor: float) -> float:
     if denominator > floor:
         return numerator / denominator
     return float("inf") if numerator > floor else float("nan")
+
+
+def _channel_rates_at_records(
+    trajectory: KineticTrajectory,
+    indices: IndexSeries,
+    records: np.ndarray,
+    *,
+    probe_dt: float,
+    ratio_floor: float,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Evaluate frozen operator responses at selected trajectory records."""
+
+    params = trajectory.parameters
+    calculator = DensityIndexCalculator(
+        trajectory.x,
+        params.epsilon,
+        params.mean_degree,
+        params.confidence_mode,
+    )
+    dx = float(trajectory.x[1] - trajectory.x[0])
+    opinion_rate = np.empty(records.size, dtype=float)
+    for output_index, record in enumerate(records):
+        counterfactual = advance_opinion_density(
+            trajectory.rho[record],
+            trajectory.velocity[record],
+            dx=dx,
+            dt=probe_dt,
+            diffusion=0.0,
+        )
+        opinion_rate[output_index] = (
+            calculator.polarization(counterfactual)
+            - indices.polarization[record]
+        ) / probe_dt
+
+    baseline = uniform_concordance_probability(params.epsilon)
+    if baseline >= 1.0:
+        rewiring_rate = np.zeros(records.size, dtype=float)
+    else:
+        rewiring_rate = np.einsum(
+            "tij,ij->t",
+            trajectory.rewiring_flux[records],
+            calculator.concordant,
+            optimize=True,
+        ) / (params.mean_degree * (1.0 - baseline))
+    gamma = np.asarray(
+        [
+            _ratio(max(float(rewiring), 0.0), max(float(opinion), 0.0), ratio_floor)
+            for opinion, rewiring in zip(opinion_rate, rewiring_rate, strict=True)
+        ],
+        dtype=float,
+    )
+    return opinion_rate, rewiring_rate, gamma
+
+
+def calculate_channel_progress_snapshots(
+    trajectory: KineticTrajectory,
+    indices: IndexSeries | None = None,
+    *,
+    progress_thresholds: tuple[float, ...] = (0.0, 0.1),
+    probe_dt: float = 1.0,
+    ratio_floor: float = 1e-12,
+) -> tuple[ChannelProgressSnapshot, ...]:
+    """Return channel-rate ratios at requested ``I_p + I_h`` levels.
+
+    A threshold not reached within the simulated horizon is evaluated at the
+    final record and marked ``reached=False``.  This keeps the numerical value
+    auditable without silently treating a censored trajectory as a crossing.
+    """
+
+    if probe_dt <= 0 or ratio_floor <= 0:
+        raise ValueError("probe_dt and ratio_floor must be positive")
+    if not progress_thresholds:
+        raise ValueError("at least one progress threshold is required")
+    thresholds = np.asarray(progress_thresholds, dtype=float)
+    if np.any(~np.isfinite(thresholds)) or np.any(thresholds < 0):
+        raise ValueError("progress thresholds must be finite and non-negative")
+    if indices is None:
+        indices = calculate_index_series(trajectory)
+    if not np.array_equal(indices.time, trajectory.time):
+        raise ValueError("index and trajectory recording times differ")
+
+    progress = indices.polarization + indices.homophily
+    brackets: list[tuple[int, int, float, bool]] = []
+    required_records: set[int] = set()
+    for threshold in thresholds:
+        found = np.flatnonzero(progress >= threshold)
+        if not found.size:
+            lower = upper = progress.size - 1
+            fraction = 0.0
+            reached = False
+        else:
+            upper = int(found[0])
+            if upper == 0:
+                lower = 0
+                fraction = 0.0
+            else:
+                lower = upper - 1
+                before = float(progress[lower])
+                after = float(progress[upper])
+                fraction = (
+                    (float(threshold) - before) / (after - before)
+                    if after > before
+                    else 1.0
+                )
+                fraction = float(np.clip(fraction, 0.0, 1.0))
+            reached = True
+        brackets.append((lower, upper, fraction, reached))
+        required_records.update((lower, upper))
+
+    records = np.asarray(sorted(required_records), dtype=int)
+    opinion_rate, rewiring_rate, _ = _channel_rates_at_records(
+        trajectory,
+        indices,
+        records,
+        probe_dt=probe_dt,
+        ratio_floor=ratio_floor,
+    )
+    record_lookup = {int(record): index for index, record in enumerate(records)}
+    snapshots = []
+    for threshold, (lower, upper, fraction, reached) in zip(
+        thresholds, brackets, strict=True
+    ):
+        lower_index = record_lookup[lower]
+        upper_index = record_lookup[upper]
+        time = float(
+            trajectory.time[lower]
+            + fraction * (trajectory.time[upper] - trajectory.time[lower])
+        )
+        opinion = float(
+            opinion_rate[lower_index]
+            + fraction * (opinion_rate[upper_index] - opinion_rate[lower_index])
+        )
+        rewiring = float(
+            rewiring_rate[lower_index]
+            + fraction * (rewiring_rate[upper_index] - rewiring_rate[lower_index])
+        )
+        snapshots.append(
+            ChannelProgressSnapshot(
+                progress_threshold=float(threshold),
+                time=time,
+                opinion_polarization_rate=opinion,
+                rewiring_homophily_rate=rewiring,
+                gamma=_ratio(
+                    max(rewiring, 0.0), max(opinion, 0.0), ratio_floor
+                ),
+                reached=reached,
+                lower_record=lower,
+                upper_record=upper,
+                interpolation_fraction=fraction,
+            )
+        )
+    return tuple(snapshots)
 
 
 def _integrate_to_progress(
@@ -154,49 +326,13 @@ def calculate_channel_contributions(
     if not np.array_equal(indices.time, trajectory.time):
         raise ValueError("index and trajectory recording times differ")
 
-    params = trajectory.parameters
-    calculator = DensityIndexCalculator(
-        trajectory.x,
-        params.epsilon,
-        params.mean_degree,
-        params.confidence_mode,
-    )
-    dx = float(trajectory.x[1] - trajectory.x[0])
-    opinion_rate = np.empty(trajectory.time.size, dtype=float)
-    for index, (rho, velocity) in enumerate(
-        zip(trajectory.rho, trajectory.velocity, strict=True)
-    ):
-        counterfactual = advance_opinion_density(
-            rho,
-            velocity,
-            dx=dx,
-            dt=probe_dt,
-            diffusion=0.0,
-        )
-        opinion_rate[index] = (
-            calculator.polarization(counterfactual) - indices.polarization[index]
-        ) / probe_dt
-
-    baseline = uniform_concordance_probability(params.epsilon)
-    if baseline >= 1.0:
-        rewiring_rate = np.zeros(trajectory.time.size, dtype=float)
-    else:
-        rewiring_rate = np.einsum(
-            "tij,ij->t",
-            trajectory.rewiring_flux,
-            calculator.concordant,
-            optimize=True,
-        ) / (params.mean_degree * (1.0 - baseline))
-    positive_opinion = np.maximum(opinion_rate, 0.0)
-    positive_rewiring = np.maximum(rewiring_rate, 0.0)
-    gamma = np.asarray(
-        [
-            _ratio(float(rewiring), float(opinion), ratio_floor)
-            for opinion, rewiring in zip(
-                positive_opinion, positive_rewiring, strict=True
-            )
-        ],
-        dtype=float,
+    records = np.arange(trajectory.time.size, dtype=int)
+    opinion_rate, rewiring_rate, gamma = _channel_rates_at_records(
+        trajectory,
+        indices,
+        records,
+        probe_dt=probe_dt,
+        ratio_floor=ratio_floor,
     )
     window = summarize_channel_window(
         trajectory.time,
@@ -281,7 +417,9 @@ def summarize_channel_window(
 
 __all__ = [
     "ChannelContributionSeries",
+    "ChannelProgressSnapshot",
     "ChannelWindowSummary",
     "calculate_channel_contributions",
+    "calculate_channel_progress_snapshots",
     "summarize_channel_window",
 ]

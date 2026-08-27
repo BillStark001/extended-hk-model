@@ -14,7 +14,6 @@ from typing import Any
 
 import numpy as np
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 REPRODUCIBILITY_SOURCES = (
     "src/ehk/modeling/mesoscopic/solver.py",
@@ -30,6 +29,9 @@ REPRODUCIBILITY_SOURCES = (
     "theory/mesoscopic/spectrum_steady_states.py",
     "theory/mesoscopic/convergence_report.py",
     "experiments/archive/macroscopic_timescale_ratio_b41/run.py",
+    "experiments/theory_guided/macroscopic_timescale_ratio/scenarios.py",
+    "experiments/theory_guided/macroscopic_timescale_ratio/run.py",
+    "experiments/theory_guided/macroscopic_timescale_ratio/analyze.py",
 )
 
 

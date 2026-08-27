@@ -81,7 +81,7 @@ def _mixture_pdf(
     return np.asarray(values, dtype=float)
 
 
-class _DensityIndexCalculator:
+class DensityIndexCalculator:
     def __init__(
         self,
         x: FloatArray,
@@ -131,28 +131,16 @@ class _DensityIndexCalculator:
             x, epsilon, confidence_mode
         ).concordance
 
-    def calculate(
-        self,
-        rho: FloatArray,
-        edge: FloatArray,
-    ) -> tuple[float, float, float, float, float]:
+    def polarization(self, rho: FloatArray) -> float:
+        """Return the objective polarization index for one density state."""
+
         objective_mass = _distance_mass(
             np.outer(rho, rho), self.distance_bins
         )
-        subjective_mass = _distance_mass(
-            edge / self.mean_degree, self.distance_bins
-        )
-
         objective_bw = _bandwidth(
             self.distances,
             objective_mass,
             effective_samples=10_000,
-            minimum=self.minimum_bandwidth,
-        )
-        subjective_bw = _bandwidth(
-            self.distances,
-            subjective_mass,
-            effective_samples=max(int(500 * self.mean_degree), 1),
             minimum=self.minimum_bandwidth,
         )
         objective_pdf = _mixture_pdf(
@@ -161,13 +149,6 @@ class _DensityIndexCalculator:
             objective_mass,
             objective_bw,
         )
-        subjective_pdf = _mixture_pdf(
-            self.distance_axis,
-            self.distances,
-            subjective_mass,
-            subjective_bw,
-        )
-
         polarized_mass = objective_mass[self.distances >= self.epsilon]
         polarized_distances = self.distances[self.distances >= self.epsilon]
         if polarized_mass.sum() > 1e-15:
@@ -191,28 +172,64 @@ class _DensityIndexCalculator:
             self.random_pdf,
             self.distance_axis,
         )
-
         polarization = 1 - _js_distance(
             objective_pdf, objective_worst, self.distance_axis
         ) / max(objective_scale, 1e-15)
+        return float(np.clip(polarization, 0.0, 1.0))
+
+    def subjective(self, edge: FloatArray) -> float:
+        """Return the subjective-distance index for one directed-edge state."""
+
+        subjective_mass = _distance_mass(
+            edge / self.mean_degree, self.distance_bins
+        )
+        subjective_bw = _bandwidth(
+            self.distances,
+            subjective_mass,
+            effective_samples=max(int(500 * self.mean_degree), 1),
+            minimum=self.minimum_bandwidth,
+        )
+        subjective_pdf = _mixture_pdf(
+            self.distance_axis,
+            self.distances,
+            subjective_mass,
+            subjective_bw,
+        )
         subjective = 1 - _js_distance(
             subjective_pdf, self.subjective_worst, self.distance_axis
         ) / max(self.subjective_scale, 1e-15)
+        return float(np.clip(subjective, 0.0, 1.0))
+
+    def homophily(self, edge: FloatArray) -> tuple[float, float]:
+        """Return normalized and raw bounded-confidence edge mass."""
 
         homophily_raw = float(
             np.sum(edge * self.concordant) / self.mean_degree
         )
         homophily = normalize_homophily(homophily_raw, self.epsilon)
-
-        return tuple(
-            float(np.clip(value, 0.0, 1.0))
-            for value in (
-                polarization,
-                subjective,
-                homophily,
-                homophily_raw,
-            )
+        return float(np.clip(homophily, 0.0, 1.0)), float(
+            np.clip(homophily_raw, 0.0, 1.0)
         )
+
+    def calculate(
+        self,
+        rho: FloatArray,
+        edge: FloatArray,
+    ) -> tuple[float, float, float, float]:
+        polarization = self.polarization(rho)
+        subjective = self.subjective(edge)
+        homophily, homophily_raw = self.homophily(edge)
+
+        return (
+            polarization,
+            subjective,
+            homophily,
+            homophily_raw,
+        )
+
+
+# Preserve the private name used by older research scripts.
+_DensityIndexCalculator = DensityIndexCalculator
 
 
 def _pathway_index(polarization: FloatArray, homophily: FloatArray) -> float:
@@ -226,7 +243,7 @@ def _pathway_index(polarization: FloatArray, homophily: FloatArray) -> float:
 
 
 def calculate_index_series(trajectory: KineticTrajectory) -> IndexSeries:
-    calculator = _DensityIndexCalculator(
+    calculator = DensityIndexCalculator(
         trajectory.x,
         trajectory.parameters.epsilon,
         trajectory.parameters.mean_degree,

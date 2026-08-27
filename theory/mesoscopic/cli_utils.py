@@ -19,6 +19,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 REPRODUCIBILITY_SOURCES = (
     "src/ehk/modeling/mesoscopic/solver.py",
     "src/ehk/metrics/density_indices.py",
+    "src/ehk/metrics/macroscopic_timescale.py",
     "theory/mesoscopic/cli_utils.py",
     "theory/mesoscopic/phase_scan.py",
     "theory/mesoscopic/recommender_scan.py",
@@ -28,6 +29,7 @@ REPRODUCIBILITY_SOURCES = (
     "theory/mesoscopic/joint_spectrum_convergence.py",
     "theory/mesoscopic/spectrum_steady_states.py",
     "theory/mesoscopic/convergence_report.py",
+    "experiments/archive/macroscopic_timescale_ratio_b41/run.py",
 )
 
 

@@ -157,6 +157,8 @@ class KineticParameters:
             "structurerandoml0",
             "structure_random_l1",
             "structurerandoml1",
+            "structure_random_l1_mean_power",
+            "structurerandoml1meanpower",
         }:
             raise ValueError(f"unsupported recommendation system: {self.recsys}")
         if self.recsys.casefold() in {
@@ -299,16 +301,40 @@ def _recommendation_channels(
         weighted = _row_normalize(score * rho[None, :], random_kernel)
         beta = params.recommendation_random_ratio
         core = (1.0 - beta) * weighted + beta * random_kernel
-    elif recsys in {"structure_random_l1", "structurerandoml1"}:
+    elif recsys in {
+        "structure_random_l1",
+        "structurerandoml1",
+        "structure_random_l1_mean_power",
+        "structurerandoml1meanpower",
+    }:
         if structural_score is None:
             raise ValueError(
                 "structure_random_l1 requires a directional-wedge score mass"
             )
         if structural_score.shape != (x.size, x.size):
             raise ValueError("structural score has incompatible shape")
-        # The L1 score mass already contains the target-bin candidate mass;
-        # unlike the L0 conditional-overlap proxy it is not multiplied by rho.
-        weighted = _row_normalize(structural_score, random_kernel)
+        # The L1 score mass already contains the target-bin candidate mass.
+        # The strict L1 rule therefore uses it directly and is defined only
+        # for zeta=1.  The explicitly named mean-power variant closes higher
+        # powers as C E[S]^zeta from the retained M1=C E[S].  It does not claim
+        # to recover the unavailable higher score moments E[S^zeta].
+        if recsys in {
+            "structure_random_l1_mean_power",
+            "structurerandoml1meanpower",
+        }:
+            candidate_mass = np.broadcast_to(rho, structural_score.shape)
+            conditional_mean = np.divide(
+                structural_score,
+                candidate_mass,
+                out=np.zeros_like(structural_score),
+                where=candidate_mass > 1e-15,
+            )
+            score_mass = candidate_mass * np.power(
+                conditional_mean, params.recommendation_steepness
+            )
+        else:
+            score_mass = structural_score
+        weighted = _row_normalize(score_mass, random_kernel)
         beta = params.recommendation_random_ratio
         core = (1.0 - beta) * weighted + beta * random_kernel
     else:
@@ -486,6 +512,38 @@ def _advance_transport_diffusion(
     return _advance_transport_diffusion_with_system(rho, edge, lower, diagonal, upper)
 
 
+def advance_opinion_density(
+    rho: FloatArray,
+    velocity: FloatArray,
+    *,
+    dx: float,
+    dt: float,
+    diffusion: float = 0.0,
+) -> FloatArray:
+    """Apply one frozen-field opinion-only step to a node density.
+
+    This is the node component of the solver's backward-Euler finite-volume
+    transport operator.  It is public so channel counterfactuals can measure
+    the macro-level response to opinion updating without applying rewiring.
+    """
+
+    rho_values = np.asarray(rho, dtype=float)
+    velocity_values = np.asarray(velocity, dtype=float)
+    if rho_values.ndim != 1 or velocity_values.shape != rho_values.shape:
+        raise ValueError("rho and velocity must be equal one-dimensional arrays")
+    if dx <= 0 or dt <= 0 or diffusion < 0:
+        raise ValueError("dx and dt must be positive and diffusion non-negative")
+    lower, diagonal, upper = _finite_volume_system(velocity_values, diffusion, dx, dt)
+    result = _solve_tridiagonal(lower, diagonal, upper, rho_values)
+    if not np.all(np.isfinite(result)) or float(result.min()) < -1e-10:
+        raise FloatingPointError("opinion counterfactual produced invalid density")
+    result = np.maximum(result, 0.0)
+    mass = float(result.sum())
+    if abs(mass - float(rho_values.sum())) > 1e-10:
+        raise FloatingPointError("opinion counterfactual violated node mass")
+    return result
+
+
 def _transport_array_axis(
     values: FloatArray,
     axis: int,
@@ -569,7 +627,12 @@ def solve(
     rho = np.full(params.grid_size, 1 / params.grid_size, dtype=float)
     edge = params.mean_degree * np.outer(rho, rho)
     operators = _build_grid_operators(params, x)
-    uses_l1 = params.recsys.casefold() in {"structure_random_l1", "structurerandoml1"}
+    uses_l1 = params.recsys.casefold() in {
+        "structure_random_l1",
+        "structurerandoml1",
+        "structure_random_l1_mean_power",
+        "structurerandoml1meanpower",
+    }
     wedge: DirectionalWedgeState | None = (
         independent_directional_wedge(rho, edge) if uses_l1 else None
     )

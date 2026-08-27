@@ -89,6 +89,41 @@ class DirectionalWedgeTests(unittest.TestCase):
                 )
             )
 
+    def test_l1_mean_power_closure_supports_higher_steepness(self):
+        size = 5
+        x = np.linspace(-1.0, 1.0, size)
+        rho = np.full(size, 1.0 / size)
+        neighbors = np.broadcast_to(rho, (size, size)).copy()
+        score_mass = np.ones((size, size))
+        score_mass[0, -1] = 2.0
+
+        rows = []
+        for steepness in (1.0, 4.0):
+            rows.append(
+                _recommendation_kernel(
+                    KineticParameters(
+                        grid_size=11,
+                        recsys="structure_random_l1_mean_power",
+                        recommendation_steepness=steepness,
+                    ),
+                    x,
+                    rho,
+                    neighbors,
+                    structural_score=score_mass,
+                )[0]
+            )
+        self.assertGreater(rows[1][-1], rows[0][-1])
+
+        trajectory = solve(
+            KineticParameters(
+                grid_size=11,
+                steps=2,
+                recsys="structure_random_l1_mean_power",
+                recommendation_steepness=4.0,
+            )
+        )
+        self.assertIsNotNone(trajectory.structural_score)
+
 
 if __name__ == "__main__":
     unittest.main()

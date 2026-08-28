@@ -523,6 +523,93 @@ def _track_well_ids(
     return ids, births, deaths
 
 
+def _track_dominant_barriers(
+    snapshots: list[MultiwellSnapshot],
+    tracked_ids: list[NDArray[np.int64]],
+    *,
+    min_basin_mass: float,
+    min_barrier_height: float,
+    score_margin: float,
+    switch_persistence: int,
+) -> tuple[NDArray[np.int64], BoolArray]:
+    """Track one dominant barrier without switching between near-tied pairs.
+
+    The instantaneous macro-score maximum is only a challenger. While the
+    incumbent pair remains robust, a challenger must lead it by ``score_margin``
+    for ``switch_persistence`` consecutive records before its identity is
+    accepted. Exact and near ties therefore retain the incumbent. If the
+    incumbent barrier ceases to be robust, the best remaining pair takes over
+    immediately; a record with no robust barrier resets the tracker.
+    """
+
+    dominant = np.full(len(snapshots), -1, dtype=np.int64)
+    switches = np.zeros(len(snapshots), dtype=bool)
+    incumbent_pair: tuple[int, int] | None = None
+    pending_pair: tuple[int, int] | None = None
+    pending_count = 0
+
+    for time_index, (snapshot, ids_at_time) in enumerate(
+        zip(snapshots, tracked_ids, strict=True)
+    ):
+        left_mass = snapshot.barrier_left_mass
+        valid = np.flatnonzero(
+            (left_mass >= min_basin_mass)
+            & ((1.0 - left_mass) >= min_basin_mass)
+            & (snapshot.barrier_height >= min_barrier_height)
+        )
+        if valid.size == 0:
+            incumbent_pair = None
+            pending_pair = None
+            pending_count = 0
+            continue
+
+        pairs = {
+            (int(ids_at_time[index]), int(ids_at_time[index + 1])): int(index)
+            for index in valid
+        }
+        challenger_index = int(valid[np.argmax(snapshot.barrier_macro_score[valid])])
+        challenger_pair = (
+            int(ids_at_time[challenger_index]),
+            int(ids_at_time[challenger_index + 1]),
+        )
+
+        if incumbent_pair is None:
+            incumbent_pair = challenger_pair
+        elif incumbent_pair not in pairs:
+            switches[time_index] = challenger_pair != incumbent_pair
+            incumbent_pair = challenger_pair
+            pending_pair = None
+            pending_count = 0
+        else:
+            incumbent_index = pairs[incumbent_pair]
+            incumbent_score = float(snapshot.barrier_macro_score[incumbent_index])
+            challenger_score = float(snapshot.barrier_macro_score[challenger_index])
+            scale = max(
+                abs(incumbent_score),
+                abs(challenger_score),
+                np.finfo(float).tiny,
+            )
+            lead = (challenger_score - incumbent_score) / scale
+            if challenger_pair == incumbent_pair or lead <= score_margin:
+                pending_pair = None
+                pending_count = 0
+            else:
+                if challenger_pair == pending_pair:
+                    pending_count += 1
+                else:
+                    pending_pair = challenger_pair
+                    pending_count = 1
+                if pending_count >= switch_persistence:
+                    incumbent_pair = challenger_pair
+                    switches[time_index] = True
+                    pending_pair = None
+                    pending_count = 0
+
+        dominant[time_index] = pairs[incumbent_pair]
+
+    return dominant, switches
+
+
 def quantify_multiwell_series(
     x: FloatArray,
     time: FloatArray,
@@ -534,9 +621,17 @@ def quantify_multiwell_series(
     min_prominence: float = 1e-8,
     relative_prominence: float = 1e-3,
     max_well_displacement: float = 0.2,
+    dominant_score_margin: float = 0.05,
+    dominant_switch_persistence: int = 3,
     overshoot_tolerance: float = 1e-4,
 ) -> MultiwellSeries:
-    """Quantify, pad, and track a time-dependent multibarrier landscape."""
+    """Quantify, pad, and track a time-dependent multibarrier landscape.
+
+    Dominant-barrier identities use a tie-aware hysteresis tracker. A robust
+    challenger must exceed the incumbent macro score by
+    ``dominant_score_margin`` for ``dominant_switch_persistence`` consecutive
+    records. This prevents symmetric barriers from generating label chatter.
+    """
 
     times = np.asarray(time, dtype=float)
     values = np.asarray(potential, dtype=float)
@@ -547,8 +642,14 @@ def quantify_multiwell_series(
         or densities.shape != values.shape
     ):
         raise ValueError("potential and rho must have shape (time.size, x.size)")
-    if max_well_displacement <= 0 or overshoot_tolerance < 0:
+    if max_well_displacement <= 0:
         raise ValueError("tracking displacement must be positive")
+    if not np.isfinite(dominant_score_margin) or not 0 <= dominant_score_margin < 1:
+        raise ValueError("dominant score margin must lie in [0, 1)")
+    if dominant_switch_persistence < 1:
+        raise ValueError("dominant switch persistence must be positive")
+    if overshoot_tolerance < 0:
+        raise ValueError("overshoot tolerance must be non-negative")
     snapshots = [
         quantify_multiwell(
             x,
@@ -562,6 +663,14 @@ def quantify_multiwell_series(
         for potential_row, rho_row in zip(values, densities, strict=True)
     ]
     tracked_ids, births, deaths = _track_well_ids(snapshots, max_well_displacement)
+    dominant_indices, switches = _track_dominant_barriers(
+        snapshots,
+        tracked_ids,
+        min_basin_mass=min_basin_mass,
+        min_barrier_height=min_barrier_height,
+        score_margin=dominant_score_margin,
+        switch_persistence=dominant_switch_persistence,
+    )
     well_width = max(snapshot.well_position.size for snapshot in snapshots)
     barrier_width = max(
         1, max(snapshot.barrier_position.size for snapshot in snapshots)
@@ -587,8 +696,6 @@ def quantify_multiwell_series(
     dominant_position = np.full(time_size, np.nan, dtype=float)
     dominant_left_id = np.full(time_size, -1, dtype=np.int64)
     dominant_right_id = np.full(time_size, -1, dtype=np.int64)
-    switches = np.zeros(time_size, dtype=bool)
-    previous_pair: tuple[int, int] | None = None
     for time_index, (snapshot, ids_at_time) in enumerate(
         zip(snapshots, tracked_ids, strict=True)
     ):
@@ -606,16 +713,13 @@ def quantify_multiwell_series(
         if barriers:
             barrier_left_id[time_index, :barriers] = ids_at_time[:-1]
             barrier_right_id[time_index, :barriers] = ids_at_time[1:]
-        dominant = snapshot.dominant_barrier_index
+        dominant = int(dominant_indices[time_index])
         if dominant >= 0:
             dominant_height[time_index] = snapshot.barrier_height[dominant]
             dominant_score[time_index] = snapshot.barrier_macro_score[dominant]
             dominant_position[time_index] = snapshot.barrier_position[dominant]
             pair = (int(ids_at_time[dominant]), int(ids_at_time[dominant + 1]))
             dominant_left_id[time_index], dominant_right_id[time_index] = pair
-            if previous_pair is not None and pair != previous_pair:
-                switches[time_index] = True
-            previous_pair = pair
 
     peak_index = int(np.argmax(dominant_height))
     peak_height = float(dominant_height[peak_index])

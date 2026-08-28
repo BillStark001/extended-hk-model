@@ -106,18 +106,72 @@ class LandscapeDiagnosticsTests(unittest.TestCase):
         self.assertGreater(result.overshoot_absolute, 0.0)
         self.assertFalse(np.any(result.dominant_switch))
 
-    def test_multiwell_series_tracks_pair_switches(self):
+    def test_multiwell_series_retains_incumbent_across_near_ties(self):
         x = np.linspace(-1.0, 1.0, 401)
-        time = np.arange(3, dtype=float)
         base = (x + 0.55) ** 2 * x**2 * (x - 0.55) ** 2
         tilt = x * (x * x - 0.55**2) ** 2
-        potential = np.stack((base + 0.2 * tilt, base, base - 0.2 * tilt))
+        coefficients = np.asarray([0.005, -0.005, 0.005, -0.005])
+        potential = base[None, :] + coefficients[:, None] * tilt[None, :]
+        rho = np.broadcast_to(np.ones_like(x) / x.size, potential.shape)
+        instantaneous = [
+            quantify_multiwell(x, row, rho[0]).dominant_barrier_index
+            for row in potential
+        ]
+
+        result = quantify_multiwell_series(
+            x,
+            np.arange(coefficients.size, dtype=float),
+            potential,
+            rho,
+            dominant_score_margin=0.05,
+            dominant_switch_persistence=2,
+        )
+
+        self.assertEqual(instantaneous, [1, 0, 1, 0])
+        self.assertFalse(np.any(result.dominant_switch))
+        self.assertEqual(np.unique(result.dominant_left_id).size, 1)
+        self.assertEqual(np.unique(result.dominant_right_id).size, 1)
+
+    def test_multiwell_series_rejects_one_record_pair_challenger(self):
+        x = np.linspace(-1.0, 1.0, 401)
+        base = (x + 0.55) ** 2 * x**2 * (x - 0.55) ** 2
+        tilt = x * (x * x - 0.55**2) ** 2
+        coefficients = np.asarray([0.2, 0.2, -0.2, 0.2])
+        potential = base[None, :] + coefficients[:, None] * tilt[None, :]
         rho = np.broadcast_to(np.ones_like(x) / x.size, potential.shape)
 
-        result = quantify_multiwell_series(x, time, potential, rho)
+        result = quantify_multiwell_series(
+            x,
+            np.arange(coefficients.size, dtype=float),
+            potential,
+            rho,
+            dominant_switch_persistence=2,
+        )
 
-        self.assertEqual(result.well_count.tolist(), [3, 3, 3])
-        self.assertTrue(np.any(result.dominant_switch))
+        self.assertFalse(np.any(result.dominant_switch))
+
+    def test_multiwell_series_confirms_persistent_pair_switch(self):
+        x = np.linspace(-1.0, 1.0, 401)
+        base = (x + 0.55) ** 2 * x**2 * (x - 0.55) ** 2
+        tilt = x * (x * x - 0.55**2) ** 2
+        coefficients = np.asarray([0.2, -0.2, -0.2, -0.2])
+        potential = base[None, :] + coefficients[:, None] * tilt[None, :]
+        rho = np.broadcast_to(np.ones_like(x) / x.size, potential.shape)
+
+        result = quantify_multiwell_series(
+            x,
+            np.arange(coefficients.size, dtype=float),
+            potential,
+            rho,
+            dominant_switch_persistence=3,
+        )
+
+        self.assertEqual(result.well_count.tolist(), [3, 3, 3, 3])
+        self.assertEqual(result.dominant_switch.tolist(), [False, False, False, True])
+        self.assertNotEqual(
+            (result.dominant_left_id[0], result.dominant_right_id[0]),
+            (result.dominant_left_id[-1], result.dominant_right_id[-1]),
+        )
 
 
 if __name__ == "__main__":

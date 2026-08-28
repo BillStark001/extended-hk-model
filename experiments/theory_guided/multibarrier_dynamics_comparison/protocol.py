@@ -22,7 +22,7 @@ DEFAULT_CONFIGURATIONS = (
 )
 DEFAULT_DYNAMICS = ("hk", "deffuant")
 DEFAULT_METHODS = ("nonlocal_jump", "fokker_planck")
-DEFAULT_EPSILON_GRIDS = ((0.2, 121), (0.4, 81), (0.8, 81))
+DEFAULT_EPSILON_GRIDS = ((0.2, 161), (0.4, 161), (0.8, 161))
 
 
 @dataclass(frozen=True)

@@ -37,7 +37,7 @@ Gauss--Legendre quadrature. This cost is paid once for each new
 
 The default run uses:
 
-- `epsilon=0.2, B=121`; `epsilon=0.4/0.8, B=81`;
+- `epsilon=0.2/0.4/0.8, B=161`;
 - HK and Deffuant dynamics;
 - nonlocal-jump and Fokker--Planck operators;
 - Random, OpinionRandom (`zeta=1/4`), and L0-StructureRandom
@@ -83,7 +83,10 @@ mass to adjacent saddle-bounded basins, and ranks each adjacent barrier by
 
 This suppresses deep but macroscopically irrelevant barriers that isolate a
 negligible-mass basin. Wells receive persistent IDs by position/basin-overlap
-matching. A peak followed by a decline is classified as barrier annihilation,
+matching. The dominant pair is tie-aware: a challenger must lead the incumbent
+macro score by 5% for three consecutive records before a switch is confirmed.
+Near-degenerate symmetric barriers therefore do not produce identity chatter.
+A peak followed by a decline is classified as barrier annihilation,
 dominant-pair switching, relaxation of the same pair, or no robust overshoot.
 Thus multiple barriers at `epsilon=0.2` are retained instead of being forced
 into one double-well curve.

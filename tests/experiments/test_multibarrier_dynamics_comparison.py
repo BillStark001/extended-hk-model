@@ -44,7 +44,7 @@ class MultibarrierDynamicsComparisonTests(unittest.TestCase):
         self.assertEqual(len(cells), 28)
         self.assertEqual({cell.diagonal_offset for cell in cells}, {-1, 0, 1})
         self.assertEqual(len(cases), 1680)
-        self.assertEqual(epsilon_grids[0].grid_size, 121)
+        self.assertEqual({item.grid_size for item in epsilon_grids}, {161})
 
     def test_four_way_smoke_run_is_resumable_and_pairable(self):
         with tempfile.TemporaryDirectory() as directory:

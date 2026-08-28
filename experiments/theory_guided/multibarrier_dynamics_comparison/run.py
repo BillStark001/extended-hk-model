@@ -137,6 +137,8 @@ def solve_case(
     min_basin_mass: float,
     min_barrier_height: float,
     max_well_displacement: float,
+    dominant_score_margin: float,
+    dominant_switch_persistence: int,
     overshoot_tolerance: float,
     protocol_digest: str,
     output_path: Path,
@@ -173,6 +175,8 @@ def solve_case(
         min_basin_mass=min_basin_mass,
         min_barrier_height=min_barrier_height,
         max_well_displacement=max_well_displacement,
+        dominant_score_margin=dominant_score_margin,
+        dominant_switch_persistence=dominant_switch_persistence,
         overshoot_tolerance=overshoot_tolerance,
     )
     t_polarization = _persistent_crossing(
@@ -329,7 +333,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--epsilon-grid",
         action="append",
-        help="repeat EPSILON:GRID; defaults to 0.2:121, 0.4:81, 0.8:81",
+        help="repeat EPSILON:GRID; defaults to 0.2:161, 0.4:161, 0.8:161",
     )
     parser.add_argument("--rates", nargs="+", type=float)
     parser.add_argument(
@@ -372,6 +376,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-basin-mass", type=float, default=0.02)
     parser.add_argument("--min-barrier-height", type=float, default=1e-4)
     parser.add_argument("--max-well-displacement", type=float, default=0.25)
+    parser.add_argument("--dominant-score-margin", type=float, default=0.05)
+    parser.add_argument("--dominant-switch-persistence", type=int, default=3)
     parser.add_argument("--overshoot-tolerance", type=float, default=1e-4)
     parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 1, 4))
     parser.add_argument(
@@ -386,8 +392,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    if args.jobs < 1 or args.persistence < 1:
-        raise ValueError("jobs and persistence must be positive")
+    if args.jobs < 1 or args.persistence < 1 or args.dominant_switch_persistence < 1:
+        raise ValueError("jobs and persistence values must be positive")
+    if (
+        not np.isfinite(args.dominant_score_margin)
+        or not 0 <= args.dominant_score_margin < 1
+    ):
+        raise ValueError("dominant score margin must lie in [0, 1)")
     if len(set(args.dynamics)) != len(args.dynamics):
         raise ValueError("dynamics must not be repeated")
     if len(set(args.methods)) != len(args.methods):
@@ -443,6 +454,8 @@ def main(argv: list[str] | None = None) -> None:
         "min_basin_mass": args.min_basin_mass,
         "min_barrier_height": args.min_barrier_height,
         "max_well_displacement": args.max_well_displacement,
+        "dominant_score_margin": args.dominant_score_margin,
+        "dominant_switch_persistence": args.dominant_switch_persistence,
         "overshoot_tolerance": args.overshoot_tolerance,
         "potential_scale": "velocity divided by influence",
         "case_count": len(cases),
@@ -495,6 +508,8 @@ def main(argv: list[str] | None = None) -> None:
         args.min_basin_mass,
         args.min_barrier_height,
         args.max_well_displacement,
+        args.dominant_score_margin,
+        args.dominant_switch_persistence,
         args.overshoot_tolerance,
         digest,
     )

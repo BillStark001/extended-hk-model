@@ -15,15 +15,17 @@ cd "$REPOSITORY_ROOT"
   OPENBLAS_NUM_THREADS=1 \
   OMP_NUM_THREADS=1 \
   python -m experiments.theory_guided.multibarrier_dynamics_comparison.run \
-  --epsilon-grid 0.2:121 \
-  --epsilon-grid 0.4:81 \
-  --epsilon-grid 0.8:81 \
+  --epsilon-grid 0.2:161 \
+  --epsilon-grid 0.4:161 \
+  --epsilon-grid 0.8:161 \
   --grid-selection anti_diagonal_band \
   --band-offsets -1 0 1 \
   --steps 4000 \
   --early-until 200 \
   --early-every 1 \
   --record-every 20 \
+  --dominant-score-margin 0.05 \
+  --dominant-switch-persistence 3 \
   --jobs "$JOBS" \
   --output-dir "$OUTPUT_DIRECTORY"
 

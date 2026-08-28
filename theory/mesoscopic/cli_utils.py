@@ -32,6 +32,8 @@ REPRODUCIBILITY_SOURCES = (
     "experiments/theory_guided/macroscopic_timescale_ratio/scenarios.py",
     "experiments/theory_guided/macroscopic_timescale_ratio/run.py",
     "experiments/theory_guided/macroscopic_timescale_ratio/analyze.py",
+    "experiments/theory_guided/potential_landscape_timescale_link/run.py",
+    "experiments/theory_guided/potential_landscape_timescale_link/analyze.py",
 )
 
 

@@ -3,23 +3,23 @@ import unittest
 import numpy as np
 
 from ehk.metrics import calculate_index_series
+from ehk.metrics.density_indices import _DensityIndexCalculator
+from ehk.metrics.homophily import uniform_concordance_probability
 from ehk.modeling.mesoscopic import KineticParameters, solve
 from ehk.modeling.mesoscopic.solver import (
     _advance_transport_diffusion,
+    _deffuant_transition_from_selection,
     _finite_volume_system,
+    _hk_transition_from_selection,
     _recommendation_channels,
     _recommendation_kernel,
     _validate_state,
 )
-from ehk.metrics.density_indices import _DensityIndexCalculator
-from ehk.metrics.homophily import uniform_concordance_probability
 
 
 class KineticSolverTests(unittest.TestCase):
     def test_solver_grid_uses_finite_volume_cell_centers(self):
-        trajectory = solve(
-            KineticParameters(grid_size=25, steps=1, record_every=1)
-        )
+        trajectory = solve(KineticParameters(grid_size=25, steps=1, record_every=1))
         dx = 2.0 / 25
         self.assertAlmostEqual(float(trajectory.x[0]), -1.0 + dx / 2)
         self.assertAlmostEqual(float(trajectory.x[-1]), 1.0 - dx / 2)
@@ -96,9 +96,7 @@ class KineticSolverTests(unittest.TestCase):
         self.assertGreaterEqual(float(rho_next.min()), 0.0)
         self.assertGreaterEqual(float(edge_next.min()), 0.0)
         self.assertAlmostEqual(float(rho_next.sum()), 1.0, places=13)
-        np.testing.assert_allclose(
-            edge_next.sum(axis=1), 15.0 * rho_next, atol=1e-12
-        )
+        np.testing.assert_allclose(edge_next.sum(axis=1), 15.0 * rho_next, atol=1e-12)
 
     def test_full_confidence_pde_converges_to_affine_contraction(self):
         errors = []
@@ -116,9 +114,7 @@ class KineticSolverTests(unittest.TestCase):
                     record_every=steps,
                 )
             )
-            initial_variance = np.sum(
-                trajectory.rho[0] * trajectory.x * trajectory.x
-            )
+            initial_variance = np.sum(trajectory.rho[0] * trajectory.x * trajectory.x)
             exact_variance = initial_variance * np.exp(-0.4)
             numerical_variance = np.sum(
                 trajectory.rho[-1] * trajectory.x * trajectory.x
@@ -129,6 +125,127 @@ class KineticSolverTests(unittest.TestCase):
     def test_invalid_explicit_time_step_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "dt \\* rewiring"):
             solve(KineticParameters(dt=2.0, rewiring=0.75))
+
+    def test_invalid_opinion_dynamics_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "opinion dynamics"):
+            solve(KineticParameters(dynamics="not-a-rule"))
+
+    def test_invalid_opinion_method_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "opinion method"):
+            solve(KineticParameters(opinion_method="not-a-method"))
+
+    def test_deffuant_transition_preserves_expected_first_moment(self):
+        x = -1.0 + (np.arange(11) + 0.5) * (2.0 / 11)
+        selection = np.zeros((x.size, x.size))
+        for source in range(x.size):
+            selection[source, source] = 0.25
+            selection[source, x.size - source - 1] += 0.75
+        influence = 0.37
+        transition = _deffuant_transition_from_selection(x, influence, selection)
+        np.testing.assert_allclose(transition.sum(axis=1), 1.0, atol=1e-15)
+        expected = x + influence * (selection @ x - x)
+        np.testing.assert_allclose(transition @ x, expected, atol=1e-14)
+
+        hk_transition = _hk_transition_from_selection(x, influence, selection)
+        np.testing.assert_allclose(hk_transition @ x, expected, atol=1e-14)
+
+    def test_deffuant_solver_conserves_mass_and_fixed_out_degree(self):
+        for dynamics in ("hk", "deffuant"):
+            for method in ("fokker_planck", "nonlocal_jump"):
+                with self.subTest(dynamics=dynamics, method=method):
+                    parameters = KineticParameters(
+                        dynamics=dynamics,
+                        opinion_method=method,
+                        grid_size=21,
+                        steps=8,
+                        record_every=1,
+                        influence=0.2,
+                        rewiring=0.05,
+                        noise_diffusion=1e-5,
+                    )
+                    trajectory = solve(parameters)
+                    np.testing.assert_allclose(
+                        trajectory.rho.sum(axis=1), 1.0, atol=1e-12
+                    )
+                    np.testing.assert_allclose(
+                        trajectory.edge.sum(axis=2),
+                        parameters.mean_degree * trajectory.rho,
+                        atol=1e-11,
+                    )
+                    self.assertGreaterEqual(float(trajectory.rho.min()), 0.0)
+
+    def test_hk_and_deffuant_density_updates_are_distinct(self):
+        common = {
+            "grid_size": 41,
+            "steps": 3,
+            "record_every": 1,
+            "epsilon": 2.0,
+            "influence": 0.4,
+            "rewiring": 0.0,
+            "noise_diffusion": 0.0,
+        }
+        for method in ("fokker_planck", "nonlocal_jump"):
+            hk = solve(
+                KineticParameters(dynamics="hk", opinion_method=method, **common)
+            )
+            deffuant = solve(
+                KineticParameters(dynamics="deffuant", opinion_method=method, **common)
+            )
+            self.assertGreater(
+                float(np.max(np.abs(hk.rho[-1] - deffuant.rho[-1]))),
+                1e-3,
+            )
+
+    def test_deffuant_second_moment_exceeds_hk_by_conditional_variance(self):
+        common = {
+            "grid_size": 21,
+            "steps": 1,
+            "record_every": 1,
+            "epsilon": 0.8,
+            "influence": 0.2,
+            "rewiring": 0.0,
+        }
+        hk = solve(KineticParameters(dynamics="hk", **common))
+        deffuant = solve(KineticParameters(dynamics="deffuant", **common))
+        self.assertGreater(float(np.max(hk.endogenous_diffusion)), 0.0)
+        self.assertGreater(
+            float(np.max(deffuant.endogenous_diffusion - hk.endogenous_diffusion)),
+            0.0,
+        )
+        np.testing.assert_allclose(
+            hk.displacement_variance[0],
+            deffuant.displacement_variance[0],
+            atol=1e-15,
+        )
+        coefficient = 0.5 * common["influence"] ** 2
+        np.testing.assert_allclose(
+            deffuant.endogenous_diffusion[0] - hk.endogenous_diffusion[0],
+            coefficient * deffuant.displacement_variance[0],
+            atol=1e-15,
+        )
+        np.testing.assert_allclose(
+            deffuant.displacement_second_moment[0],
+            deffuant.displacement_variance[0]
+            + 2.0 * hk.endogenous_diffusion[0] / common["influence"] ** 2,
+            atol=1e-15,
+        )
+
+    def test_deffuant_retains_l1_transport_capability(self):
+        for dynamics in ("hk", "deffuant"):
+            for method in ("fokker_planck", "nonlocal_jump"):
+                trajectory = solve(
+                    KineticParameters(
+                        dynamics=dynamics,
+                        opinion_method=method,
+                        recsys="structure_random_l1_mean_power",
+                        recommendation_steepness=4.0,
+                        grid_size=11,
+                        steps=2,
+                        record_every=1,
+                    )
+                )
+                self.assertIsNotNone(trajectory.structural_score)
+                self.assertEqual(trajectory.structural_score.shape, (3, 11, 11))
 
     def test_implicit_transport_does_not_impose_a_courant_rejection(self):
         trajectory = solve(
@@ -164,9 +281,7 @@ class KineticSolverTests(unittest.TestCase):
         self.assertGreater(float(calculator.distance_axis[-1]), 2.0)
 
     def test_uniform_initial_state_has_zero_normalized_indices(self):
-        trajectory = solve(
-            KineticParameters(grid_size=31, steps=1, record_every=1)
-        )
+        trajectory = solve(KineticParameters(grid_size=31, steps=1, record_every=1))
         indices = calculate_index_series(trajectory)
         self.assertAlmostEqual(float(indices.polarization[0]), 0.0, places=12)
         self.assertAlmostEqual(float(indices.homophily[0]), 0.0, places=12)
@@ -175,10 +290,8 @@ class KineticSolverTests(unittest.TestCase):
         x = np.linspace(-1.0, 1.0, 31)
         rho = np.full(x.size, 1 / x.size)
         neighbors = np.broadcast_to(rho, (x.size, x.size)).copy()
-        random_kernel, core, random_slots, core_slots = (
-            _recommendation_channels(
-                KineticParameters(recsys="opinionm9"), x, rho, neighbors
-            )
+        random_kernel, core, random_slots, core_slots = _recommendation_channels(
+            KineticParameters(recsys="opinionm9"), x, rho, neighbors
         )
         self.assertEqual((random_slots, core_slots), (1, 9))
         m9 = _recommendation_kernel(
@@ -217,9 +330,7 @@ class KineticSolverTests(unittest.TestCase):
             recommendation_steepness=2.0,
         )
         kernel = _recommendation_kernel(params, x, rho, neighbors)
-        expected_score = np.maximum(
-            1 - np.abs(x[None, :] - x[:, None]) / 0.5, 0
-        ) ** 2
+        expected_score = np.maximum(1 - np.abs(x[None, :] - x[:, None]) / 0.5, 0) ** 2
         expected = expected_score * rho[None, :]
         expected /= expected.sum(axis=1, keepdims=True)
         np.testing.assert_allclose(kernel, expected, atol=1e-15)
@@ -227,13 +338,15 @@ class KineticSolverTests(unittest.TestCase):
     def test_structure_random_l0_uses_steepness_power(self):
         x = np.linspace(-1.0, 1.0, 5)
         rho = np.full(x.size, 1 / x.size)
-        neighbors = np.asarray([
-            [0.6, 0.4, 0.0, 0.0, 0.0],
-            [0.3, 0.5, 0.2, 0.0, 0.0],
-            [0.0, 0.2, 0.6, 0.2, 0.0],
-            [0.0, 0.0, 0.2, 0.5, 0.3],
-            [0.0, 0.0, 0.0, 0.4, 0.6],
-        ])
+        neighbors = np.asarray(
+            [
+                [0.6, 0.4, 0.0, 0.0, 0.0],
+                [0.3, 0.5, 0.2, 0.0, 0.0],
+                [0.0, 0.2, 0.6, 0.2, 0.0],
+                [0.0, 0.0, 0.2, 0.5, 0.3],
+                [0.0, 0.0, 0.0, 0.4, 0.6],
+            ]
+        )
         params = KineticParameters(
             recsys="structure_random_l0",
             recommendation_steepness=2.0,
@@ -258,9 +371,9 @@ class KineticSolverTests(unittest.TestCase):
             )
             indices = calculate_index_series(trajectory)
 
-            def crossing(values):
+            def crossing(values, current_indices=indices):
                 found = np.flatnonzero(values >= 0.5)
-                return indices.time[found[0]] if found.size else np.inf
+                return current_indices.time[found[0]] if found.size else np.inf
 
             results[label] = (
                 crossing(indices.polarization),

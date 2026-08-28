@@ -1,4 +1,4 @@
-"""Finite-volume PDE solver for the no-repost/no-history EHK model.
+"""Mesoscopic kinetic solvers for the no-repost/no-history EHK model.
 
 The state uses probability *masses* on a uniform opinion grid:
 
@@ -9,25 +9,30 @@ The state uses probability *masses* on a uniform opinion grid:
     Directed edges per agent from source bin ``i`` to target bin ``j``.
 
 Consequently ``rho.sum() == 1``, ``edge.sum() == mean_degree``, and
-``edge.sum(axis=1) == mean_degree * rho``.  The coupled continuity equations
-are discretized by a cell-centered finite-volume method with zero numerical
-flux at the opinion boundaries.  Backward-Euler face fluxes make each
-one-dimensional transport--diffusion sweep conservative and positivity
-preserving; the same sweep is applied to the node density and to both edge
-endpoints.  One-for-one rewiring is an explicit conservative source step.
+``edge.sum(axis=1) == mean_degree * rho``. Opinion updating can use either an
+explicit nonlocal transition kernel or a one-/two-moment Fokker--Planck
+truncation. Both operators are conservative and positivity preserving and are
+applied consistently to node, edge, and optional directional-wedge states.
+One-for-one rewiring is an explicit conservative source step.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import solve_banded
+from scipy.sparse import csr_matrix, spmatrix
 
-from ..opinion_cells import ConfidenceMode, confidence_geometry
+from ..opinion_cells import (
+    CompromiseJumpGeometry,
+    ConfidenceMode,
+    compromise_jump_geometry,
+    confidence_geometry,
+)
 from .directional_wedge import (
     DirectionalWedgeState,
     independent_directional_wedge,
@@ -42,14 +47,18 @@ FloatArray = NDArray[np.float64]
 class KineticParameters:
     """Parameters of the mesoscopic closure.
 
-    ``influence`` and ``rewiring`` are rates per model time unit. With the
-    default ``dt=1`` they have the same numerical values as the corresponding
-    microscopic per-step parameters.
+    ``dynamics`` selects deterministic HK averaging or Deffuant random-neighbor
+    compromise. ``opinion_method`` selects the full nonlocal push-forward or a
+    two-moment Fokker--Planck truncation of that same increment.
+    ``dt * influence`` is the compromise fraction per numerical step and
+    ``dt * rewiring`` is the rewiring probability per step.
     """
 
     epsilon: float = 0.45
     influence: float = 0.05
     rewiring: float = 0.025
+    dynamics: str = "hk"
+    opinion_method: str = "fokker_planck"
     mean_degree: float = 15.0
     recsys_count: int = 10
     recsys: str = "random"
@@ -142,6 +151,18 @@ class KineticParameters:
             raise ValueError("dt * rewiring must not exceed 1")
         if self.confidence_mode not in {"cell_average", "center"}:
             raise ValueError(f"unknown confidence mode: {self.confidence_mode}")
+        if self.dynamics.casefold() not in {"hk", "deffuant"}:
+            raise ValueError(f"unsupported opinion dynamics: {self.dynamics}")
+        if self.opinion_method.casefold() not in {
+            "fokker_planck",
+            "nonlocal_jump",
+        }:
+            raise ValueError(f"unsupported opinion method: {self.opinion_method}")
+        if (
+            self.opinion_method.casefold() == "nonlocal_jump"
+            and self.dt * self.influence > 1 + 1e-12
+        ):
+            raise ValueError("nonlocal-jump dt * influence must not exceed 1")
         if self.recsys.casefold() not in {
             "random",
             "rand",
@@ -180,6 +201,9 @@ class KineticTrajectory:
     velocity: FloatArray
     edge: FloatArray
     rewiring_flux: FloatArray
+    displacement_variance: FloatArray
+    displacement_second_moment: FloatArray
+    endogenous_diffusion: FloatArray
     structural_score: FloatArray | None = None
 
     def metadata(self) -> dict[str, Any]:
@@ -192,6 +216,7 @@ class _GridOperators:
 
     concordant: FloatArray
     displacement: FloatArray
+    displacement_second: FloatArray
     opinion_score: FloatArray | None
 
 
@@ -215,7 +240,12 @@ def _build_grid_operators(
         )
     else:
         opinion_score = None
-    return _GridOperators(concordant, geometry.displacement, opinion_score)
+    return _GridOperators(
+        concordant,
+        geometry.displacement,
+        geometry.displacement_second,
+        opinion_score,
+    )
 
 
 def _row_normalize(values: FloatArray, fallback: FloatArray) -> FloatArray:
@@ -364,15 +394,15 @@ def _recommendation_kernel(
     return (random_slots * random_kernel + core_slots * core) / params.recsys_count
 
 
-def _compute_fields(
+def _compute_fields_with_selection(
     params: KineticParameters,
     x: FloatArray,
     rho: FloatArray,
     edge: FloatArray,
     operators: _GridOperators | None = None,
     structural_score: FloatArray | None = None,
-) -> tuple[FloatArray, FloatArray]:
-    """Compute opinion velocity and the rewiring gain/loss field."""
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Compute drift, rewiring flux, and the concordant selection kernel."""
 
     if operators is None:
         operators = _build_grid_operators(params, x)
@@ -395,6 +425,12 @@ def _compute_fields(
     visible_mass = k * neighbors + params.recsys_count * recommendations
     denominator = np.sum(concordant * visible_mass, axis=1)
     numerator = np.sum(operators.displacement * visible_mass, axis=1)
+    selection = np.divide(
+        concordant * visible_mass,
+        denominator[:, None],
+        out=np.zeros_like(visible_mass),
+        where=denominator[:, None] > 1e-15,
+    )
     velocity = params.influence * np.divide(
         numerator,
         denominator,
@@ -436,12 +472,294 @@ def _compute_fields(
     )
     event_rate = params.rewiring * rho * eligibility
     rewiring_flux = event_rate[:, None] * (gain - loss)
+    return velocity, rewiring_flux, selection
+
+
+def _compute_fields(
+    params: KineticParameters,
+    x: FloatArray,
+    rho: FloatArray,
+    edge: FloatArray,
+    operators: _GridOperators | None = None,
+    structural_score: FloatArray | None = None,
+) -> tuple[FloatArray, FloatArray]:
+    """Compute opinion velocity and the rewiring gain/loss field."""
+
+    velocity, rewiring_flux, _ = _compute_fields_with_selection(
+        params,
+        x,
+        rho,
+        edge,
+        operators=operators,
+        structural_score=structural_score,
+    )
     return velocity, rewiring_flux
+
+
+def _deposition_coordinates(
+    x: FloatArray,
+    destination: FloatArray,
+) -> tuple[NDArray[np.int64], NDArray[np.int64], FloatArray]:
+    """Return conservative linear-deposition indices and upper weights."""
+
+    size = x.size
+    dx = float(x[1] - x[0])
+    coordinate = (destination - x[0]) / dx
+    lower = np.clip(np.floor(coordinate).astype(np.int64), 0, size - 1)
+    upper = np.minimum(lower + 1, size - 1)
+    fraction = np.clip(coordinate - lower, 0.0, 1.0)
+    return lower, upper, fraction
+
+
+def _validate_selection_grid(
+    x: FloatArray, selection: FloatArray, influence: float
+) -> tuple[FloatArray, FloatArray]:
+    x_values = np.asarray(x, dtype=float)
+    probabilities = np.asarray(selection, dtype=float)
+    if x_values.ndim != 1 or probabilities.shape != (x_values.size,) * 2:
+        raise ValueError("selection must have shape (x.size, x.size)")
+    if not 0 <= influence <= 1:
+        raise ValueError("influence must be in [0, 1]")
+    if x_values.size < 2 or not np.allclose(
+        np.diff(x_values), x_values[1] - x_values[0]
+    ):
+        raise ValueError("x must be a uniform one-dimensional grid")
+    if (
+        not np.all(np.isfinite(x_values))
+        or not np.all(np.diff(x_values) > 0)
+        or not np.all(np.isfinite(probabilities))
+        or np.any(probabilities < 0)
+    ):
+        raise ValueError(
+            "x must increase and selection must be finite and non-negative"
+        )
+    return x_values, probabilities
+
+
+def _deffuant_transition_from_selection(
+    x: FloatArray,
+    influence: float,
+    selection: FloatArray,
+    jump_geometry: CompromiseJumpGeometry | None = None,
+) -> FloatArray:
+    """Return a row-stochastic source-to-destination compromise kernel.
+
+    ``selection[i, j]`` is the probability that an agent in cell ``i`` picks
+    a concordant visible opinion in cell ``j``. The continuous destination
+    ``x_i + influence * (x_j - x_i)`` is deposited linearly onto the two
+    neighboring cell centers, preserving its first moment exactly.
+    """
+
+    x_values, probabilities = _validate_selection_grid(x, selection, influence)
+
+    size = x_values.size
+    if jump_geometry is not None:
+        if jump_geometry.destination_index.shape[:2] != (size, size):
+            raise ValueError("jump geometry must match the selection grid")
+        source = np.broadcast_to(np.arange(size)[:, None], (size, size))
+        transition = np.zeros((size, size), dtype=float)
+        for slot in range(jump_geometry.weight.shape[2]):
+            destination = jump_geometry.destination_index[:, :, slot]
+            contribution = probabilities * jump_geometry.weight[:, :, slot]
+            valid = destination >= 0
+            np.add.at(
+                transition,
+                (source[valid], destination[valid]),
+                contribution[valid],
+            )
+        row_sum = transition.sum(axis=1)
+        invalid = np.flatnonzero(row_sum <= 1e-15)
+        transition[invalid, invalid] = 1.0
+        transition /= transition.sum(axis=1, keepdims=True)
+        return transition
+
+    row_sum = probabilities.sum(axis=1)
+    valid = row_sum > 1e-15
+    normalized = np.divide(
+        probabilities,
+        row_sum[:, None],
+        out=np.zeros_like(probabilities),
+        where=valid[:, None],
+    )
+    destination = x_values[:, None] + influence * (
+        x_values[None, :] - x_values[:, None]
+    )
+    lower, upper, fraction = _deposition_coordinates(x_values, destination)
+    source = np.broadcast_to(np.arange(size)[:, None], lower.shape)
+    transition = np.zeros((size, size), dtype=float)
+    np.add.at(transition, (source, lower), normalized * (1.0 - fraction))
+    np.add.at(transition, (source, upper), normalized * fraction)
+    invalid = np.flatnonzero(~valid)
+    transition[invalid, invalid] = 1.0
+    transition /= transition.sum(axis=1, keepdims=True)
+    return transition
+
+
+def _hk_transition_from_selection(
+    x: FloatArray,
+    influence: float,
+    selection: FloatArray,
+    displacement_mean: FloatArray | None = None,
+) -> FloatArray:
+    """Return the deterministic HK conditional-mean push-forward kernel."""
+
+    x_values, probabilities = _validate_selection_grid(x, selection, influence)
+    size = x_values.size
+    row_sum = probabilities.sum(axis=1)
+    valid = row_sum > 1e-15
+    if displacement_mean is None:
+        mean_target = np.divide(
+            probabilities @ x_values,
+            row_sum,
+            out=x_values.copy(),
+            where=valid,
+        )
+        displacement = mean_target - x_values
+    else:
+        displacement = np.asarray(displacement_mean, dtype=float)
+        if displacement.shape != x_values.shape:
+            raise ValueError("displacement mean must match x")
+    destination = x_values + influence * displacement
+    lower, upper, fraction = _deposition_coordinates(x_values, destination)
+    source = np.arange(size)
+    transition = np.zeros((size, size), dtype=float)
+    transition[source, lower] += 1.0 - fraction
+    transition[source, upper] += fraction
+    transition /= transition.sum(axis=1, keepdims=True)
+    return transition
+
+
+def _selection_displacement_moments(
+    selection: FloatArray,
+    operators: _GridOperators,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Return mean, raw second moment, and variance of ``Y-X`` given ``X``."""
+
+    pair_mean = np.divide(
+        operators.displacement,
+        operators.concordant,
+        out=np.zeros_like(operators.displacement),
+        where=operators.concordant > 1e-15,
+    )
+    pair_second = np.divide(
+        operators.displacement_second,
+        operators.concordant,
+        out=np.zeros_like(operators.displacement_second),
+        where=operators.concordant > 1e-15,
+    )
+    mean = np.sum(selection * pair_mean, axis=1)
+    second = np.sum(selection * pair_second, axis=1)
+    variance = np.maximum(second - mean * mean, 0.0)
+    return mean, second, variance
+
+
+def _endogenous_diffusion(
+    params: KineticParameters,
+    displacement_mean: FloatArray,
+    displacement_second_moment: FloatArray,
+) -> FloatArray:
+    """Return the second Kramers--Moyal coefficient of the opinion jump.
+
+    HK makes the deterministic conditional-mean jump, whose raw second moment
+    is the squared mean displacement. Deffuant samples one visible opinion, so
+    its raw second moment additionally contains the conditional variance.
+    """
+
+    if params.dynamics.casefold() == "hk":
+        second_moment = displacement_mean * displacement_mean
+    else:
+        second_moment = displacement_second_moment
+    return 0.5 * params.dt * params.influence * params.influence * second_moment
+
+
+def opinion_transition_matrix(
+    params: KineticParameters,
+    x: FloatArray,
+    rho: FloatArray,
+    edge: FloatArray,
+    *,
+    structural_score: FloatArray | None = None,
+) -> FloatArray:
+    """Build the frozen nonlocal jump kernel for one mesoscopic state."""
+
+    operators = _build_grid_operators(params, np.asarray(x, dtype=float))
+    _, _, selection = _compute_fields_with_selection(
+        params,
+        np.asarray(x, dtype=float),
+        np.asarray(rho, dtype=float),
+        np.asarray(edge, dtype=float),
+        operators=operators,
+        structural_score=structural_score,
+    )
+    displacement_mean, _, _ = _selection_displacement_moments(selection, operators)
+    influence = params.dt * params.influence
+    if params.dynamics.casefold() == "deffuant":
+        jump_geometry = compromise_jump_geometry(
+            x, params.epsilon, influence, params.confidence_mode
+        )
+        return _deffuant_transition_from_selection(
+            x, influence, selection, jump_geometry
+        )
+    return _hk_transition_from_selection(x, influence, selection, displacement_mean)
+
+
+def deffuant_transition_matrix(
+    params: KineticParameters,
+    x: FloatArray,
+    rho: FloatArray,
+    edge: FloatArray,
+    *,
+    structural_score: FloatArray | None = None,
+) -> FloatArray:
+    """Build a frozen Deffuant kernel; retained as an explicit public alias."""
+
+    if params.dynamics.casefold() != "deffuant":
+        raise ValueError("deffuant transition requires dynamics='deffuant'")
+    return opinion_transition_matrix(
+        params, x, rho, edge, structural_score=structural_score
+    )
+
+
+def _apply_transition_axis(
+    values: FloatArray,
+    axis: int,
+    transition: FloatArray | spmatrix,
+) -> FloatArray:
+    """Apply a row-stochastic source-to-destination kernel along one axis."""
+
+    moved = np.moveaxis(np.asarray(values, dtype=float), axis, 0)
+    shape = moved.shape
+    result = transition.T @ moved.reshape(shape[0], -1)
+    return np.moveaxis(result.reshape(shape), 0, axis)
+
+
+def advance_jump_density(
+    rho: FloatArray,
+    transition: FloatArray,
+) -> FloatArray:
+    """Apply one frozen row-stochastic opinion jump to a node density."""
+
+    rho_values = np.asarray(rho, dtype=float)
+    kernel = np.asarray(transition, dtype=float)
+    if rho_values.ndim != 1 or kernel.shape != (rho_values.size,) * 2:
+        raise ValueError("transition must be square and match rho")
+    if np.any(kernel < -1e-12) or not np.allclose(kernel.sum(axis=1), 1.0, atol=1e-12):
+        raise ValueError("transition must be non-negative and row stochastic")
+    return np.asarray(rho_values @ kernel, dtype=float)
+
+
+def advance_deffuant_density(
+    rho: FloatArray,
+    transition: FloatArray,
+) -> FloatArray:
+    """Apply a Deffuant kernel; retained as an explicit public alias."""
+
+    return advance_jump_density(rho, transition)
 
 
 def _finite_volume_system(
     velocity: FloatArray,
-    diffusion: float,
+    diffusion: float | FloatArray,
     dx: float,
     dt: float,
 ) -> tuple[FloatArray, FloatArray, FloatArray]:
@@ -455,11 +773,19 @@ def _finite_volume_system(
     """
 
     face_velocity = 0.5 * (velocity[:-1] + velocity[1:])
-    diffusion_rate = diffusion / (dx * dx)
-    left_to_right = np.maximum(face_velocity, 0.0) / dx + diffusion_rate
-    right_to_left = np.maximum(-face_velocity, 0.0) / dx + diffusion_rate
-
     size = velocity.size
+    diffusion_values = np.asarray(diffusion, dtype=float)
+    if diffusion_values.ndim == 0:
+        diffusion_values = np.full(size, float(diffusion_values))
+    if diffusion_values.shape != (size,) or np.any(diffusion_values < 0):
+        raise ValueError("diffusion must be non-negative and scalar or velocity-shaped")
+    left_to_right = np.maximum(face_velocity, 0.0) / dx + diffusion_values[:-1] / (
+        dx * dx
+    )
+    right_to_left = np.maximum(-face_velocity, 0.0) / dx + diffusion_values[1:] / (
+        dx * dx
+    )
+
     lower = -dt * left_to_right.copy()
     upper = -dt * right_to_left.copy()
     diagonal = np.ones(size, dtype=float)
@@ -542,6 +868,73 @@ def advance_opinion_density(
     if abs(mass - float(rho_values.sum())) > 1e-10:
         raise FloatingPointError("opinion counterfactual violated node mass")
     return result
+
+
+def advance_frozen_opinion_density(
+    params: KineticParameters,
+    x: FloatArray,
+    rho: FloatArray,
+    edge: FloatArray,
+    *,
+    dt: float | None = None,
+    structural_score: FloatArray | None = None,
+) -> FloatArray:
+    """Advance only the configured frozen opinion operator for one state.
+
+    Rewiring and exogenous regularizing diffusion are excluded. The configured
+    raw-second-moment term remains part of the Fokker--Planck opinion operator.
+    """
+
+    probe = replace(
+        params,
+        dt=params.dt if dt is None else dt,
+        rewiring=0.0,
+        noise_diffusion=0.0,
+    )
+    probe.validate()
+    x_values = np.asarray(x, dtype=float)
+    rho_values = np.asarray(rho, dtype=float)
+    edge_values = np.asarray(edge, dtype=float)
+    operators = _build_grid_operators(probe, x_values)
+    velocity, _, selection = _compute_fields_with_selection(
+        probe,
+        x_values,
+        rho_values,
+        edge_values,
+        operators=operators,
+        structural_score=structural_score,
+    )
+    mean, second_moment, _ = _selection_displacement_moments(selection, operators)
+    if probe.opinion_method.casefold() == "nonlocal_jump":
+        if probe.dynamics.casefold() == "deffuant":
+            jump_geometry = compromise_jump_geometry(
+                x_values,
+                probe.epsilon,
+                probe.dt * probe.influence,
+                probe.confidence_mode,
+            )
+            transition = _deffuant_transition_from_selection(
+                x_values,
+                probe.dt * probe.influence,
+                selection,
+                jump_geometry,
+            )
+        else:
+            transition = _hk_transition_from_selection(
+                x_values,
+                probe.dt * probe.influence,
+                selection,
+                mean,
+            )
+        return advance_jump_density(rho_values, transition)
+
+    diffusion = _endogenous_diffusion(probe, mean, second_moment)
+    dx = float(x_values[1] - x_values[0])
+    lower, diagonal, upper = _finite_volume_system(velocity, diffusion, dx, probe.dt)
+    result = _solve_tridiagonal(lower, diagonal, upper, rho_values)
+    if not np.all(np.isfinite(result)) or float(result.min()) < -1e-10:
+        raise FloatingPointError("frozen opinion operator produced invalid density")
+    return np.maximum(result, 0.0)
 
 
 def _transport_array_axis(
@@ -627,6 +1020,17 @@ def solve(
     rho = np.full(params.grid_size, 1 / params.grid_size, dtype=float)
     edge = params.mean_degree * np.outer(rho, rho)
     operators = _build_grid_operators(params, x)
+    jump_geometry = (
+        compromise_jump_geometry(
+            x,
+            params.epsilon,
+            params.dt * params.influence,
+            params.confidence_mode,
+        )
+        if params.dynamics.casefold() == "deffuant"
+        and params.opinion_method.casefold() == "nonlocal_jump"
+        else None
+    )
     uses_l1 = params.recsys.casefold() in {
         "structure_random_l1",
         "structurerandoml1",
@@ -658,11 +1062,14 @@ def solve(
     velocities: list[FloatArray] = []
     edges: list[FloatArray] = []
     fluxes: list[FloatArray] = []
+    displacement_variances: list[FloatArray] = []
+    displacement_second_moments: list[FloatArray] = []
+    endogenous_diffusions: list[FloatArray] = []
     structural_scores: list[FloatArray] = []
 
     def record(step: int) -> None:
         structural_score = wedge.union_score_mass() if wedge is not None else None
-        velocity, flux = _compute_fields(
+        velocity, flux, selection = _compute_fields_with_selection(
             params,
             x,
             rho,
@@ -675,6 +1082,14 @@ def solve(
         velocities.append(velocity.copy())
         edges.append(edge.copy())
         fluxes.append(flux.copy())
+        displacement_mean, displacement_second_moment, displacement_variance = (
+            _selection_displacement_moments(selection, operators)
+        )
+        displacement_variances.append(displacement_variance)
+        displacement_second_moments.append(displacement_second_moment)
+        endogenous_diffusions.append(
+            _endogenous_diffusion(params, displacement_mean, displacement_second_moment)
+        )
         if structural_score is not None:
             structural_scores.append(structural_score.copy())
 
@@ -682,7 +1097,7 @@ def solve(
 
     for step in range(1, params.steps + 1):
         structural_score = wedge.union_score_mass() if wedge is not None else None
-        velocity, rewiring_flux = _compute_fields(
+        velocity, rewiring_flux, selection = _compute_fields_with_selection(
             params,
             x,
             rho,
@@ -691,29 +1106,79 @@ def solve(
             structural_score=structural_score,
         )
 
-        # Lie splitting of the PDE: a conservative rewiring source step,
-        # followed by conservative no-flux transport--diffusion sweeps in the
-        # source and target opinion coordinates.  All coefficients are frozen
-        # at the old state, so the nonlinear method is first order in time.
+        # Lie splitting: a conservative rewiring source step followed by the
+        # configured conservative opinion operator. All coefficients are
+        # frozen at the old state, so the nonlinear method is first order in
+        # time.
         edge_with_rewiring = edge + params.dt * rewiring_flux
         wedge_after_rewiring = (
             mix_after_rewiring(wedge, rho, edge, edge_with_rewiring)
             if wedge is not None
             else None
         )
-        lower, diagonal, upper = _finite_volume_system(
-            velocity, params.noise_diffusion, dx, params.dt
+        displacement_mean, displacement_second_moment, _ = (
+            _selection_displacement_moments(selection, operators)
         )
-        rho, edge = _advance_transport_diffusion_with_system(
-            rho, edge_with_rewiring, lower, diagonal, upper
+        endogenous_diffusion = _endogenous_diffusion(
+            params, displacement_mean, displacement_second_moment
         )
-        if wedge_after_rewiring is not None:
-            wedge = transport_directional_wedge(
-                wedge_after_rewiring,
-                lambda values, axis, lo=lower, diag=diagonal, up=upper: (
-                    _transport_array_axis(values, axis, lo, diag, up)
-                ),
+        if params.opinion_method.casefold() == "nonlocal_jump":
+            if params.dynamics.casefold() == "deffuant":
+                transition = _deffuant_transition_from_selection(
+                    x,
+                    params.dt * params.influence,
+                    selection,
+                    jump_geometry,
+                )
+            else:
+                transition = _hk_transition_from_selection(
+                    x,
+                    params.dt * params.influence,
+                    selection,
+                    displacement_mean,
+                )
+            rho = advance_jump_density(rho, transition)
+            sparse_transition = csr_matrix(transition)
+            edge = _apply_transition_axis(edge_with_rewiring, 0, sparse_transition)
+            edge = _apply_transition_axis(edge, 1, sparse_transition)
+            if wedge_after_rewiring is not None:
+                wedge = transport_directional_wedge(
+                    wedge_after_rewiring,
+                    lambda values, axis, kernel=sparse_transition: (
+                        _apply_transition_axis(values, axis, kernel)
+                    ),
+                )
+            if params.noise_diffusion > 0:
+                zero_velocity = np.zeros_like(velocity)
+                lower, diagonal, upper = _finite_volume_system(
+                    zero_velocity, params.noise_diffusion, dx, params.dt
+                )
+                rho, edge = _advance_transport_diffusion_with_system(
+                    rho, edge, lower, diagonal, upper
+                )
+                if wedge is not None:
+                    wedge = transport_directional_wedge(
+                        wedge,
+                        lambda values, axis, lo=lower, diag=diagonal, up=upper: (
+                            _transport_array_axis(values, axis, lo, diag, up)
+                        ),
+                    )
+        else:
+            total_diffusion = params.noise_diffusion + endogenous_diffusion
+            lower, diagonal, upper = _finite_volume_system(
+                velocity, total_diffusion, dx, params.dt
             )
+            rho, edge = _advance_transport_diffusion_with_system(
+                rho, edge_with_rewiring, lower, diagonal, upper
+            )
+            if wedge_after_rewiring is not None:
+                wedge = transport_directional_wedge(
+                    wedge_after_rewiring,
+                    lambda values, axis, lo=lower, diag=diagonal, up=upper: (
+                        _transport_array_axis(values, axis, lo, diag, up)
+                    ),
+                )
+        if wedge is not None:
             wedge.validate(params.grid_size)
         rho, edge = _validate_state(rho, edge, params.mean_degree)
 
@@ -728,5 +1193,8 @@ def solve(
         velocity=np.asarray(velocities),
         edge=np.asarray(edges),
         rewiring_flux=np.asarray(fluxes),
+        displacement_variance=np.asarray(displacement_variances),
+        displacement_second_moment=np.asarray(displacement_second_moments),
+        endogenous_diffusion=np.asarray(endogenous_diffusions),
         structural_score=(np.asarray(structural_scores) if structural_scores else None),
     )

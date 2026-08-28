@@ -14,7 +14,7 @@ from ehk.metrics.density_indices import (
 from ehk.metrics.homophily import uniform_concordance_probability
 from ehk.modeling.mesoscopic import (
     KineticTrajectory,
-    advance_opinion_density,
+    advance_frozen_opinion_density,
 )
 from ehk.modeling.mesoscopic.solver import FloatArray
 
@@ -95,15 +95,20 @@ def _channel_rates_at_records(
         params.mean_degree,
         params.confidence_mode,
     )
-    dx = float(trajectory.x[1] - trajectory.x[0])
     opinion_rate = np.empty(records.size, dtype=float)
     for output_index, record in enumerate(records):
-        counterfactual = advance_opinion_density(
+        structural_score = (
+            trajectory.structural_score[record]
+            if trajectory.structural_score is not None
+            else None
+        )
+        counterfactual = advance_frozen_opinion_density(
+            params,
+            trajectory.x,
             trajectory.rho[record],
-            trajectory.velocity[record],
-            dx=dx,
+            trajectory.edge[record],
             dt=probe_dt,
-            diffusion=0.0,
+            structural_score=structural_score,
         )
         opinion_rate[output_index] = (
             calculator.polarization(counterfactual)

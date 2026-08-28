@@ -17,6 +17,7 @@ import numpy as np
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 REPRODUCIBILITY_SOURCES = (
     "src/ehk/modeling/mesoscopic/solver.py",
+    "src/ehk/modeling/opinion_cells.py",
     "src/ehk/metrics/density_indices.py",
     "src/ehk/metrics/macroscopic_timescale.py",
     "theory/mesoscopic/cli_utils.py",
@@ -34,6 +35,11 @@ REPRODUCIBILITY_SOURCES = (
     "experiments/theory_guided/macroscopic_timescale_ratio/analyze.py",
     "experiments/theory_guided/potential_landscape_timescale_link/run.py",
     "experiments/theory_guided/potential_landscape_timescale_link/analyze.py",
+    "experiments/theory_guided/multibarrier_dynamics_comparison/protocol.py",
+    "experiments/theory_guided/multibarrier_dynamics_comparison/run.py",
+    "experiments/theory_guided/multibarrier_dynamics_comparison/analyze.py",
+    "experiments/theory_guided/multibarrier_dynamics_comparison/select_comparison_points.py",
+    "experiments/theory_guided/multibarrier_dynamics_comparison/benchmark_methods.py",
 )
 
 

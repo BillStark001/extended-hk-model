@@ -3,7 +3,10 @@ import unittest
 import numpy as np
 
 from ehk.metrics.homophily import uniform_concordance_probability
-from ehk.modeling.opinion_cells import confidence_geometry
+from ehk.modeling.opinion_cells import (
+    compromise_jump_geometry,
+    confidence_geometry,
+)
 
 
 class ConfidenceGeometryTests(unittest.TestCase):
@@ -34,6 +37,11 @@ class ConfidenceGeometryTests(unittest.TestCase):
             -geometry.displacement.T,
             atol=2e-14,
         )
+        np.testing.assert_allclose(
+            geometry.displacement_second,
+            geometry.displacement_second.T,
+            atol=2e-14,
+        )
         self.assertGreaterEqual(float(geometry.concordance.min()), 0.0)
         self.assertLessEqual(float(geometry.concordance.max()), 1.0)
 
@@ -58,6 +66,12 @@ class ConfidenceGeometryTests(unittest.TestCase):
             x[None, :] - x[:, None],
             atol=2e-14,
         )
+        expected_displacement_second = (x[None, :] - x[:, None]) ** 2 + dx * dx / 6.0
+        np.testing.assert_allclose(
+            geometry.displacement_second,
+            expected_displacement_second,
+            atol=2e-14,
+        )
 
     def test_center_mode_reproduces_legacy_mask(self):
         x = self._grid(15)
@@ -68,6 +82,29 @@ class ConfidenceGeometryTests(unittest.TestCase):
             geometry.displacement,
             expected * (x[None, :] - x[:, None]),
         )
+
+    def test_jump_quadrature_is_conditional_and_preserves_pair_mean(self):
+        x = self._grid(31)
+        epsilon = 0.45
+        influence = 0.37
+        confidence = confidence_geometry(x, epsilon)
+        jump = compromise_jump_geometry(x, epsilon, influence)
+        source, target = 14, 18
+
+        self.assertGreater(confidence.concordance[source, target], 0.0)
+        self.assertAlmostEqual(float(jump.weight[source, target].sum()), 1.0, places=14)
+        destinations = jump.destination_index[source, target]
+        valid = destinations >= 0
+        numerical_mean = float(
+            jump.weight[source, target, valid] @ x[destinations[valid]]
+        )
+        expected_mean = float(
+            x[source]
+            + influence
+            * confidence.displacement[source, target]
+            / confidence.concordance[source, target]
+        )
+        self.assertAlmostEqual(numerical_mean, expected_mean, places=13)
 
 
 if __name__ == "__main__":

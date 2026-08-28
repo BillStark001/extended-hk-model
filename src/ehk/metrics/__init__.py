@@ -8,9 +8,13 @@ from .density_indices import (
 from .landscape_diagnostics import (
     LandscapeSeries,
     LandscapeSnapshot,
+    MultiwellSeries,
+    MultiwellSnapshot,
     potential_from_force,
     quantify_landscape,
     quantify_landscape_series,
+    quantify_multiwell,
+    quantify_multiwell_series,
 )
 from .macroscopic_timescale import (
     ChannelContributionSeries,
@@ -29,11 +33,15 @@ __all__ = [
     "IndexSeries",
     "LandscapeSeries",
     "LandscapeSnapshot",
+    "MultiwellSeries",
+    "MultiwellSnapshot",
     "calculate_channel_contributions",
     "calculate_channel_progress_snapshots",
     "calculate_index_series",
     "potential_from_force",
     "quantify_landscape",
     "quantify_landscape_series",
+    "quantify_multiwell",
+    "quantify_multiwell_series",
     "summarize_channel_window",
 ]

@@ -7,6 +7,8 @@ from ehk.metrics.landscape_diagnostics import (
     potential_from_force,
     quantify_landscape,
     quantify_landscape_series,
+    quantify_multiwell,
+    quantify_multiwell_series,
 )
 
 
@@ -37,9 +39,7 @@ class LandscapeDiagnosticsTests(unittest.TestCase):
         time = np.arange(6, dtype=float)
         condition = np.asarray([False, True, False, True, True, True])
         self.assertEqual(first_persistent_time(time, condition, persistence=2), 3.0)
-        self.assertTrue(
-            np.isnan(first_persistent_time(time, condition, persistence=4))
-        )
+        self.assertTrue(np.isnan(first_persistent_time(time, condition, persistence=4)))
 
     def test_series_reports_barrier_maturation(self):
         x = np.linspace(-1.0, 1.0, 81)
@@ -65,6 +65,59 @@ class LandscapeDiagnosticsTests(unittest.TestCase):
         potential = potential_from_force(x, force, center=False)
         expected = np.stack((x * x - 1.0, 2.0 * (x * x - 1.0)))
         np.testing.assert_allclose(potential, expected, atol=1e-14)
+
+    def test_multiwell_extracts_adjacent_barriers_and_basin_masses(self):
+        x = np.linspace(-1.0, 1.0, 401)
+        potential = (x + 0.55) ** 2 * x**2 * (x - 0.55) ** 2
+        rho = (
+            np.exp(-(((x + 0.55) / 0.12) ** 2))
+            + 2.0 * np.exp(-((x / 0.12) ** 2))
+            + np.exp(-(((x - 0.55) / 0.12) ** 2))
+        )
+        rho /= rho.sum()
+
+        result = quantify_multiwell(x, potential, rho)
+
+        self.assertEqual(result.well_position.size, 3)
+        self.assertEqual(result.barrier_position.size, 2)
+        self.assertEqual(result.robust_well_count, 3)
+        self.assertEqual(result.robust_barrier_count, 2)
+        self.assertAlmostEqual(float(result.basin_mass.sum()), 1.0)
+        self.assertIn(result.dominant_barrier_index, {0, 1})
+
+    def test_multiwell_series_distinguishes_same_pair_relaxation(self):
+        x = np.linspace(-1.0, 1.0, 201)
+        time = np.arange(4, dtype=float)
+        shape = (x * x - 0.25) ** 2
+        amplitudes = np.asarray([0.2, 1.0, 0.8, 0.5])
+        potential = amplitudes[:, None] * shape[None, :]
+        rho = np.broadcast_to(np.ones_like(x) / x.size, potential.shape)
+
+        result = quantify_multiwell_series(
+            x,
+            time,
+            potential,
+            rho,
+            overshoot_tolerance=1e-8,
+        )
+
+        self.assertEqual(result.overshoot_class, "same_pair_relaxation")
+        self.assertAlmostEqual(result.peak_time, 1.0)
+        self.assertGreater(result.overshoot_absolute, 0.0)
+        self.assertFalse(np.any(result.dominant_switch))
+
+    def test_multiwell_series_tracks_pair_switches(self):
+        x = np.linspace(-1.0, 1.0, 401)
+        time = np.arange(3, dtype=float)
+        base = (x + 0.55) ** 2 * x**2 * (x - 0.55) ** 2
+        tilt = x * (x * x - 0.55**2) ** 2
+        potential = np.stack((base + 0.2 * tilt, base, base - 0.2 * tilt))
+        rho = np.broadcast_to(np.ones_like(x) / x.size, potential.shape)
+
+        result = quantify_multiwell_series(x, time, potential, rho)
+
+        self.assertEqual(result.well_count.tolist(), [3, 3, 3])
+        self.assertTrue(np.any(result.dominant_switch))
 
 
 if __name__ == "__main__":

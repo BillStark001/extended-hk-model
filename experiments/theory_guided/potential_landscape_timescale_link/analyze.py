@@ -246,6 +246,7 @@ def _plot_landscape_timing(
         ("t_H_0.5", r"$t_H$", "s", "tab:red"),
         ("t_P_0.5", r"$t_P$", "o", "tab:blue"),
         ("t_double_well", r"$t_{\rm dw}$", "D", "tab:purple"),
+        ("t_barrier_0.01", r"$t_{\Delta V=0.01}$", "v", "tab:orange"),
         ("t_barrier_0.05", r"$t_{\Delta V=0.05}$", "^", "tab:green"),
     )
     for column, design in enumerate(designs):
@@ -307,9 +308,14 @@ def _metrics(rows: list[dict[str, Any]], designs: tuple[str, ...]) -> dict[str, 
     result: dict[str, Any] = {"by_design": {}}
     outcomes = (
         "t_double_well",
-        "t_double_well_minus_t_P",
-        "t_double_well_minus_t_H",
+        "t_barrier_0.01",
+        "t_barrier_0.05",
+        "t_barrier_half_final",
+        "t_barrier_0.05_minus_t_P",
+        "t_barrier_0.05_minus_t_H",
         "barrier_at_u_0.1",
+        "barrier_at_t_P",
+        "barrier_at_t_H",
         "barrier_final",
         "barrier_max",
     )
@@ -318,6 +324,9 @@ def _metrics(rows: list[dict[str, Any]], designs: tuple[str, ...]) -> dict[str, 
         pathways = np.asarray([float(row["I_w"]) for row in selected])
         design_result: dict[str, Any] = {
             "count": len(selected),
+            "double_well_formation_times": sorted(
+                {float(row["t_double_well"]) for row in selected}
+            ),
             "pathway_mean": float(np.mean(pathways)),
             "pathway_standard_deviation": float(np.std(pathways)),
             "pathway_range": float(np.ptp(pathways)),
@@ -337,6 +346,8 @@ def _metrics(rows: list[dict[str, Any]], designs: tuple[str, ...]) -> dict[str, 
                         "delta_I_w": float(row["I_w"]) - float(reference["I_w"]),
                         "delta_t_double_well": float(row["t_double_well"])
                         - float(reference["t_double_well"]),
+                        "delta_t_barrier_0.05": float(row["t_barrier_0.05"])
+                        - float(reference["t_barrier_0.05"]),
                         "delta_barrier_at_u_0.1": float(row["barrier_at_u_0.1"])
                         - float(reference["barrier_at_u_0.1"]),
                         "delta_barrier_final": float(row["barrier_final"])
@@ -375,8 +386,8 @@ def _write_results(
                 "",
                 f"## {DESIGN_LABELS.get(design, design)}",
                 "",
-                "| scenario | alpha | q | I_w | t_dw | t_dw-t_P | t_dw-t_H | Delta V(u=0.1) | Delta V(final) |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| scenario | alpha | q | I_w | t_P | t_H | t_DeltaV=.01 | t_DeltaV=.05 | Delta V(u=.1) | Delta V(final) |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
         for row in selected:
@@ -386,9 +397,10 @@ def _write_results(
                 _format(row["alpha"]),
                 _format(row["q"]),
                 _format(row["I_w"]),
-                _format(row["t_double_well"]),
-                _format(row["t_double_well_minus_t_P"]),
-                _format(row["t_double_well_minus_t_H"]),
+                _format(row["t_P_0.5"]),
+                _format(row["t_H_0.5"]),
+                _format(row["t_barrier_0.01"]),
+                _format(row["t_barrier_0.05"]),
                 _format(row["barrier_at_u_0.1"]),
                 _format(row["barrier_final"]),
             )
@@ -417,6 +429,10 @@ def _write_results(
     lines.extend(
         [
             "",
+            "## Main diagnostics",
+            "",
+            _diagnostic_text(rows, metrics),
+            "",
             "## Interpretation guardrails",
             "",
             (
@@ -438,6 +454,63 @@ def _write_results(
     (output_dir / "RESULTS.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _diagnostic_text(rows: list[dict[str, Any]], metrics: dict[str, Any]) -> str:
+    lookup = {(str(row["design"]), str(row["configuration"])): row for row in rows}
+    required = {
+        ("common_rates", "random"),
+        ("common_rates", "opinion_random_zeta1"),
+        ("common_rates", "opinion_random_zeta4"),
+        ("transition_center", "random"),
+        ("transition_center", "opinion_random_zeta4"),
+    }
+    if not required.issubset(lookup):
+        return "The main cross-design diagnostic requires the full protocol."
+    common_random = lookup["common_rates", "random"]
+    common_zeta1 = lookup["common_rates", "opinion_random_zeta1"]
+    common_zeta4 = lookup["common_rates", "opinion_random_zeta4"]
+    centered_random = lookup["transition_center", "random"]
+    centered_zeta4 = lookup["transition_center", "opinion_random_zeta4"]
+    common_range = float(metrics["by_design"]["common_rates"]["pathway_range"])
+    centered_range = float(metrics["by_design"]["transition_center"]["pathway_range"])
+    compression = common_range / centered_range
+    return "\n\n".join(
+        (
+            (
+                "The unthresholded double-well onset is degenerate: every case "
+                "has t_dw=1. A shallow double well appears almost immediately, "
+                "so barrier-threshold first passages, rather than t_dw, carry "
+                "the useful timing information."
+            ),
+            (
+                "At common rates, OpinionRandom zeta=1 and zeta=4 delay t_P "
+                f"from {_format(common_random['t_P_0.5'])} to "
+                f"{_format(common_zeta1['t_P_0.5'])} and "
+                f"{_format(common_zeta4['t_P_0.5'])}, while t_H remains "
+                f"{_format(common_random['t_H_0.5'])}, "
+                f"{_format(common_zeta1['t_H_0.5'])}, and "
+                f"{_format(common_zeta4['t_H_0.5'])}. Their Delta V=0.05 "
+                f"passages move from {_format(common_random['t_barrier_0.05'])} "
+                f"to {_format(common_zeta1['t_barrier_0.05'])} and "
+                f"{_format(common_zeta4['t_barrier_0.05'])}; Delta V at u=0.1 "
+                f"falls from {_format(common_random['barrier_at_u_0.1'])} to "
+                f"{_format(common_zeta1['barrier_at_u_0.1'])} and "
+                f"{_format(common_zeta4['barrier_at_u_0.1'])}."
+            ),
+            (
+                "Using each fitted transition center compresses the seven-case "
+                f"I_w range by a factor of {compression:.2f}, from "
+                f"{common_range:.4f} to {centered_range:.4f}. It does not align "
+                "the landscape clocks: centered OpinionRandom zeta=4 still "
+                f"reaches Delta V=0.05 at t={_format(centered_zeta4['t_barrier_0.05'])} "
+                f"versus t={_format(centered_random['t_barrier_0.05'])} for Random, "
+                "and has a smaller early barrier. The fitted q therefore "
+                "compensates the delayed opinion channel by delaying homophily; "
+                "it does not make the underlying drift landscapes equivalent."
+            ),
+        )
+    )
+
+
 def analyze_output(output_dir: Path) -> None:
     protocol = json.loads((output_dir / "protocol.json").read_text(encoding="utf-8"))
     designs = tuple(dict.fromkeys(str(case["design"]) for case in protocol["cases"]))
@@ -445,6 +518,13 @@ def analyze_output(output_dir: Path) -> None:
     if len(rows) != len(protocol["cases"]):
         raise ValueError(
             f"summary contains {len(rows)} cases, expected {len(protocol['cases'])}"
+        )
+    for row in rows:
+        row["t_barrier_0.05_minus_t_P"] = float(row["t_barrier_0.05"]) - float(
+            row["t_P_0.5"]
+        )
+        row["t_barrier_0.05_minus_t_H"] = float(row["t_barrier_0.05"]) - float(
+            row["t_H_0.5"]
         )
     case_data = {
         str(row["key"]): _load_case(output_dir / "cases" / f"{row['key']}.npz")

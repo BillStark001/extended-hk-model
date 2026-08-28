@@ -10,8 +10,11 @@ The state uses probability *masses* on a uniform opinion grid:
 
 Consequently ``rho.sum() == 1``, ``edge.sum() == mean_degree``, and
 ``edge.sum(axis=1) == mean_degree * rho``. Opinion updating can use either an
-explicit nonlocal transition kernel or a one-/two-moment Fokker--Planck
-truncation. Both operators are conservative and positivity preserving and are
+explicit nonlocal transition kernel or a sparse one-/two-moment closure of
+that kernel. The latter is the discrete-time Fokker--Planck approximation: on
+the current grid it matches every source row's destination mean and variance
+exactly, instead of mixing a synchronous jump with an unrelated implicit PDE
+time step. Both operators are conservative and positivity preserving and are
 applied consistently to node, edge, and optional directional-wedge states.
 One-for-one rewiring is an explicit conservative source step.
 """
@@ -49,7 +52,8 @@ class KineticParameters:
 
     ``dynamics`` selects deterministic HK averaging or Deffuant random-neighbor
     compromise. ``opinion_method`` selects the full nonlocal push-forward or a
-    two-moment Fokker--Planck truncation of that same increment.
+    sparse discrete Fokker--Planck closure that exactly matches the full
+    kernel's first two destination moments on the chosen opinion grid.
     ``dt * influence`` is the compromise fraction per numerical step and
     ``dt * rewiring`` is the rewiring probability per step.
     """
@@ -158,11 +162,8 @@ class KineticParameters:
             "nonlocal_jump",
         }:
             raise ValueError(f"unsupported opinion method: {self.opinion_method}")
-        if (
-            self.opinion_method.casefold() == "nonlocal_jump"
-            and self.dt * self.influence > 1 + 1e-12
-        ):
-            raise ValueError("nonlocal-jump dt * influence must not exceed 1")
+        if self.dt * self.influence > 1 + 1e-12:
+            raise ValueError("dt * influence must not exceed 1")
         if self.recsys.casefold() not in {
             "random",
             "rand",
@@ -629,6 +630,159 @@ def _hk_transition_from_selection(
     return transition
 
 
+def _moment_matched_transition(
+    x: FloatArray,
+    reference: FloatArray,
+    *,
+    tolerance: float = 5e-13,
+) -> csr_matrix:
+    """Compress a transition to a sparse positive two-moment closure.
+
+    Each reference row defines a destination mean and variance on the current
+    grid.  The closure mixes (i) the minimum-variance two-node distribution
+    bracketing that mean and (ii) the narrowest balanced outer two-node
+    distribution needed to bracket the requested variance.  It therefore has
+    at most four nonzeros per row and exactly preserves zeroth, first, and
+    second destination moments up to roundoff.
+
+    Matching the *discrete* reference moments is important. Linear deposition
+    itself contributes grid-scale variance, so matching only the continuous
+    pre-deposition moments makes two nominally identical operators disagree at
+    finite resolution.
+    """
+
+    grid = np.asarray(x, dtype=float)
+    kernel = np.asarray(reference, dtype=float)
+    size = grid.size
+    if grid.ndim != 1 or kernel.shape != (size, size):
+        raise ValueError("reference transition must be square and match x")
+    if np.any(kernel < -tolerance) or not np.allclose(
+        kernel.sum(axis=1), 1.0, atol=tolerance
+    ):
+        raise ValueError("reference transition must be non-negative and stochastic")
+
+    destination_mean = kernel @ grid
+    destination_second = kernel @ (grid * grid)
+    destination_variance = np.maximum(
+        destination_second - destination_mean * destination_mean,
+        0.0,
+    )
+    dx = float(grid[1] - grid[0])
+    coordinate = (destination_mean - grid[0]) / dx
+    inner_left = np.clip(np.floor(coordinate).astype(np.int64), 0, size - 1)
+    inner_right = np.minimum(inner_left + 1, size - 1)
+    on_node = np.abs(destination_mean - grid[inner_left]) <= tolerance
+    inner_right[on_node] = inner_left[on_node]
+    inner_span = grid[inner_right] - grid[inner_left]
+    inner_right_weight = np.divide(
+        destination_mean - grid[inner_left],
+        inner_span,
+        out=np.zeros(size, dtype=float),
+        where=inner_span > 0,
+    )
+    inner_variance = (1.0 - inner_right_weight) * (
+        grid[inner_left] - destination_mean
+    ) ** 2 + inner_right_weight * (grid[inner_right] - destination_mean) ** 2
+    variance_scale = np.maximum.reduce(
+        (np.ones(size), destination_variance, inner_variance)
+    )
+    if np.any(destination_variance < inner_variance - tolerance * variance_scale):
+        raise FloatingPointError(
+            "reference variance is below the grid's realizable minimum"
+        )
+
+    needs_outer = destination_variance > (inner_variance + tolerance * variance_scale)
+    left_capacity = destination_mean - grid[0]
+    right_capacity = grid[-1] - destination_mean
+    if np.any(
+        needs_outer & ((left_capacity <= tolerance) | (right_capacity <= tolerance))
+    ):
+        raise FloatingPointError(
+            "positive variance is not realizable at an opinion boundary"
+        )
+    radius = np.sqrt(destination_variance)
+    left_distance = np.minimum(radius, left_capacity)
+    right_distance = np.divide(
+        destination_variance,
+        left_distance,
+        out=np.zeros(size, dtype=float),
+        where=left_distance > 0,
+    )
+    right_limited = right_distance > right_capacity
+    right_distance[right_limited] = right_capacity[right_limited]
+    left_distance[right_limited] = np.divide(
+        destination_variance[right_limited],
+        right_distance[right_limited],
+        out=np.zeros(np.count_nonzero(right_limited), dtype=float),
+        where=right_distance[right_limited] > 0,
+    )
+    outer_left = np.clip(
+        np.floor((destination_mean - left_distance - grid[0]) / dx).astype(np.int64),
+        0,
+        size - 1,
+    )
+    outer_right = np.clip(
+        np.ceil((destination_mean + right_distance - grid[0]) / dx).astype(np.int64),
+        0,
+        size - 1,
+    )
+    if np.any(needs_outer & (outer_left >= outer_right)):
+        raise FloatingPointError("failed to bracket a positive variance")
+    outer_span = grid[outer_right] - grid[outer_left]
+    outer_right_weight = np.divide(
+        destination_mean - grid[outer_left],
+        outer_span,
+        out=np.zeros(size, dtype=float),
+        where=outer_span > 0,
+    )
+    outer_variance = (1.0 - outer_right_weight) * (
+        grid[outer_left] - destination_mean
+    ) ** 2 + outer_right_weight * (grid[outer_right] - destination_mean) ** 2
+    if np.any(
+        needs_outer
+        & (outer_variance < destination_variance - tolerance * variance_scale)
+    ):
+        raise FloatingPointError("failed to bracket the requested variance")
+    mixture = np.divide(
+        destination_variance - inner_variance,
+        outer_variance - inner_variance,
+        out=np.zeros(size, dtype=float),
+        where=needs_outer,
+    )
+    mixture = np.clip(mixture, 0.0, 1.0)
+
+    source = np.arange(size, dtype=np.int64)
+    rows = np.tile(source, 4)
+    columns = np.concatenate((inner_left, inner_right, outer_left, outer_right))
+    values = np.concatenate(
+        (
+            (1.0 - mixture) * (1.0 - inner_right_weight),
+            (1.0 - mixture) * inner_right_weight,
+            mixture * (1.0 - outer_right_weight),
+            mixture * outer_right_weight,
+        )
+    )
+    positive = values > 0.0
+    closure = csr_matrix(
+        (values[positive], (rows[positive], columns[positive])),
+        shape=kernel.shape,
+    )
+    closure.sum_duplicates()
+    closure.eliminate_zeros()
+    row_sum = np.asarray(closure.sum(axis=1)).ravel()
+    closure.data *= np.repeat(1.0 / row_sum, np.diff(closure.indptr))
+    row_sum = np.asarray(closure.sum(axis=1)).ravel()
+    if not np.allclose(row_sum, 1.0, atol=5e-12):
+        raise FloatingPointError("moment closure is not row stochastic")
+    closure_mean = np.asarray(closure @ grid).ravel()
+    closure_second = np.asarray(closure @ (grid * grid)).ravel()
+    if not np.allclose(closure_mean, destination_mean, atol=5e-12) or not np.allclose(
+        closure_second, destination_second, atol=5e-12
+    ):
+        raise FloatingPointError("moment closure failed to preserve moments")
+    return closure
+
+
 def _selection_displacement_moments(
     selection: FloatArray,
     operators: _GridOperators,
@@ -658,18 +812,53 @@ def _endogenous_diffusion(
     displacement_mean: FloatArray,
     displacement_second_moment: FloatArray,
 ) -> FloatArray:
-    """Return the second Kramers--Moyal coefficient of the opinion jump.
+    """Return the physical one-step diffusion from conditional jump variance.
 
-    HK makes the deterministic conditional-mean jump, whose raw second moment
-    is the squared mean displacement. Deffuant samples one visible opinion, so
-    its raw second moment additionally contains the conditional variance.
+    The synchronous one-step closure transports the conditional mean exactly;
+    only variance around that mean is diffusive. HK therefore has no physical
+    endogenous diffusion, whereas Deffuant retains the conditional-neighbor
+    variance. Grid-deposition variance is matched separately by the discrete
+    transition and is intentionally excluded from this diagnostic.
     """
 
     if params.dynamics.casefold() == "hk":
-        second_moment = displacement_mean * displacement_mean
-    else:
-        second_moment = displacement_second_moment
-    return 0.5 * params.dt * params.influence * params.influence * second_moment
+        return np.zeros_like(displacement_mean)
+    variance = np.maximum(
+        displacement_second_moment - displacement_mean * displacement_mean,
+        0.0,
+    )
+    return 0.5 * params.dt * params.influence * params.influence * variance
+
+
+def _jump_transition_from_selection(
+    params: KineticParameters,
+    x: FloatArray,
+    selection: FloatArray,
+    displacement_mean: FloatArray,
+    jump_geometry: CompromiseJumpGeometry | None = None,
+) -> FloatArray:
+    """Build the full frozen jump transition for either opinion dynamics."""
+
+    influence = params.dt * params.influence
+    if params.dynamics.casefold() == "deffuant":
+        geometry = jump_geometry or compromise_jump_geometry(
+            x,
+            params.epsilon,
+            influence,
+            params.confidence_mode,
+        )
+        return _deffuant_transition_from_selection(
+            x,
+            influence,
+            selection,
+            geometry,
+        )
+    return _hk_transition_from_selection(
+        x,
+        influence,
+        selection,
+        displacement_mean,
+    )
 
 
 def opinion_transition_matrix(
@@ -680,7 +869,7 @@ def opinion_transition_matrix(
     *,
     structural_score: FloatArray | None = None,
 ) -> FloatArray:
-    """Build the frozen nonlocal jump kernel for one mesoscopic state."""
+    """Build the configured frozen opinion transition for one state."""
 
     operators = _build_grid_operators(params, np.asarray(x, dtype=float))
     _, _, selection = _compute_fields_with_selection(
@@ -692,15 +881,18 @@ def opinion_transition_matrix(
         structural_score=structural_score,
     )
     displacement_mean, _, _ = _selection_displacement_moments(selection, operators)
-    influence = params.dt * params.influence
-    if params.dynamics.casefold() == "deffuant":
-        jump_geometry = compromise_jump_geometry(
-            x, params.epsilon, influence, params.confidence_mode
-        )
-        return _deffuant_transition_from_selection(
-            x, influence, selection, jump_geometry
-        )
-    return _hk_transition_from_selection(x, influence, selection, displacement_mean)
+    reference = _jump_transition_from_selection(
+        params,
+        np.asarray(x, dtype=float),
+        selection,
+        displacement_mean,
+    )
+    if (
+        params.opinion_method.casefold() == "nonlocal_jump"
+        or params.dynamics.casefold() == "hk"
+    ):
+        return reference
+    return _moment_matched_transition(x, reference).toarray()
 
 
 def deffuant_transition_matrix(
@@ -881,8 +1073,8 @@ def advance_frozen_opinion_density(
 ) -> FloatArray:
     """Advance only the configured frozen opinion operator for one state.
 
-    Rewiring and exogenous regularizing diffusion are excluded. The configured
-    raw-second-moment term remains part of the Fokker--Planck opinion operator.
+    Rewiring and exogenous regularizing diffusion are excluded. The moment
+    closure is built from the same full jump kernel as the nonlocal update.
     """
 
     probe = replace(
@@ -896,7 +1088,7 @@ def advance_frozen_opinion_density(
     rho_values = np.asarray(rho, dtype=float)
     edge_values = np.asarray(edge, dtype=float)
     operators = _build_grid_operators(probe, x_values)
-    velocity, _, selection = _compute_fields_with_selection(
+    _, _, selection = _compute_fields_with_selection(
         probe,
         x_values,
         rho_values,
@@ -904,37 +1096,20 @@ def advance_frozen_opinion_density(
         operators=operators,
         structural_score=structural_score,
     )
-    mean, second_moment, _ = _selection_displacement_moments(selection, operators)
-    if probe.opinion_method.casefold() == "nonlocal_jump":
-        if probe.dynamics.casefold() == "deffuant":
-            jump_geometry = compromise_jump_geometry(
-                x_values,
-                probe.epsilon,
-                probe.dt * probe.influence,
-                probe.confidence_mode,
-            )
-            transition = _deffuant_transition_from_selection(
-                x_values,
-                probe.dt * probe.influence,
-                selection,
-                jump_geometry,
-            )
-        else:
-            transition = _hk_transition_from_selection(
-                x_values,
-                probe.dt * probe.influence,
-                selection,
-                mean,
-            )
-        return advance_jump_density(rho_values, transition)
-
-    diffusion = _endogenous_diffusion(probe, mean, second_moment)
-    dx = float(x_values[1] - x_values[0])
-    lower, diagonal, upper = _finite_volume_system(velocity, diffusion, dx, probe.dt)
-    result = _solve_tridiagonal(lower, diagonal, upper, rho_values)
-    if not np.all(np.isfinite(result)) or float(result.min()) < -1e-10:
-        raise FloatingPointError("frozen opinion operator produced invalid density")
-    return np.maximum(result, 0.0)
+    mean, _, _ = _selection_displacement_moments(selection, operators)
+    reference = _jump_transition_from_selection(
+        probe,
+        x_values,
+        selection,
+        mean,
+    )
+    transition: FloatArray | spmatrix = reference
+    if (
+        probe.opinion_method.casefold() == "fokker_planck"
+        and probe.dynamics.casefold() == "deffuant"
+    ):
+        transition = _moment_matched_transition(x_values, reference)
+    return np.asarray(transition.T @ rho_values, dtype=float)
 
 
 def _transport_array_axis(
@@ -1028,7 +1203,6 @@ def solve(
             params.confidence_mode,
         )
         if params.dynamics.casefold() == "deffuant"
-        and params.opinion_method.casefold() == "nonlocal_jump"
         else None
     )
     uses_l1 = params.recsys.casefold() in {
@@ -1116,64 +1290,44 @@ def solve(
             if wedge is not None
             else None
         )
-        displacement_mean, displacement_second_moment, _ = (
-            _selection_displacement_moments(selection, operators)
+        displacement_mean, _, _ = _selection_displacement_moments(selection, operators)
+        reference_transition = _jump_transition_from_selection(
+            params,
+            x,
+            selection,
+            displacement_mean,
+            jump_geometry,
         )
-        endogenous_diffusion = _endogenous_diffusion(
-            params, displacement_mean, displacement_second_moment
-        )
-        if params.opinion_method.casefold() == "nonlocal_jump":
-            if params.dynamics.casefold() == "deffuant":
-                transition = _deffuant_transition_from_selection(
-                    x,
-                    params.dt * params.influence,
-                    selection,
-                    jump_geometry,
-                )
-            else:
-                transition = _hk_transition_from_selection(
-                    x,
-                    params.dt * params.influence,
-                    selection,
-                    displacement_mean,
-                )
-            rho = advance_jump_density(rho, transition)
-            sparse_transition = csr_matrix(transition)
-            edge = _apply_transition_axis(edge_with_rewiring, 0, sparse_transition)
-            edge = _apply_transition_axis(edge, 1, sparse_transition)
-            if wedge_after_rewiring is not None:
-                wedge = transport_directional_wedge(
-                    wedge_after_rewiring,
-                    lambda values, axis, kernel=sparse_transition: (
-                        _apply_transition_axis(values, axis, kernel)
-                    ),
-                )
-            if params.noise_diffusion > 0:
-                zero_velocity = np.zeros_like(velocity)
-                lower, diagonal, upper = _finite_volume_system(
-                    zero_velocity, params.noise_diffusion, dx, params.dt
-                )
-                rho, edge = _advance_transport_diffusion_with_system(
-                    rho, edge, lower, diagonal, upper
-                )
-                if wedge is not None:
-                    wedge = transport_directional_wedge(
-                        wedge,
-                        lambda values, axis, lo=lower, diag=diagonal, up=upper: (
-                            _transport_array_axis(values, axis, lo, diag, up)
-                        ),
-                    )
-        else:
-            total_diffusion = params.noise_diffusion + endogenous_diffusion
+        sparse_transition: spmatrix = csr_matrix(reference_transition)
+        if (
+            params.opinion_method.casefold() == "fokker_planck"
+            and params.dynamics.casefold() == "deffuant"
+        ):
+            sparse_transition = _moment_matched_transition(
+                x,
+                reference_transition,
+            )
+        rho = np.asarray(sparse_transition.T @ rho, dtype=float)
+        edge = _apply_transition_axis(edge_with_rewiring, 0, sparse_transition)
+        edge = _apply_transition_axis(edge, 1, sparse_transition)
+        if wedge_after_rewiring is not None:
+            wedge = transport_directional_wedge(
+                wedge_after_rewiring,
+                lambda values, axis, kernel=sparse_transition: _apply_transition_axis(
+                    values, axis, kernel
+                ),
+            )
+        if params.noise_diffusion > 0:
+            zero_velocity = np.zeros_like(velocity)
             lower, diagonal, upper = _finite_volume_system(
-                velocity, total_diffusion, dx, params.dt
+                zero_velocity, params.noise_diffusion, dx, params.dt
             )
             rho, edge = _advance_transport_diffusion_with_system(
-                rho, edge_with_rewiring, lower, diagonal, upper
+                rho, edge, lower, diagonal, upper
             )
-            if wedge_after_rewiring is not None:
+            if wedge is not None:
                 wedge = transport_directional_wedge(
-                    wedge_after_rewiring,
+                    wedge,
                     lambda values, axis, lo=lower, diag=diagonal, up=upper: (
                         _transport_array_axis(values, axis, lo, diag, up)
                     ),

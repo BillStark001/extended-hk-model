@@ -5,29 +5,28 @@ representations:
 
 - `hk/nonlocal_jump`: deterministic conditional-mean push-forward;
 - `deffuant/nonlocal_jump`: full random-neighbor compromise kernel;
-- `hk/fokker_planck`: first-moment drift plus the squared deterministic-jump
-  second moment;
-- `deffuant/fokker_planck`: the same drift plus the full random-neighbor raw
-  second moment.
+- `hk/fokker_planck`: the same deterministic push-forward, because a
+  zero-conditional-variance jump is already fixed by its first two moments;
+- `deffuant/fokker_planck`: a sparse positive closure built only from each
+  full jump row's destination mean and variance.
 
-The Deffuant Fokker--Planck coefficient uses
+For the physical diffusion diagnostic, the one-step convention is
 
 \[
-D_{\mathrm{HK}}(x,t)
+D_{\mathrm{HK}}(x,t)=0,
+\qquad D_{\mathrm{D}}(x,t)
 =\frac{\Delta t\,\alpha^2}{2}
-\mathbb{E}[Y-X\mid X=x]^2,
-\qquad
-D_{\mathrm{D}}(x,t)
-=\frac{\Delta t\,\alpha^2}{2}
-\mathbb{E}[(Y-X)^2\mid X=x],
+\operatorname{Var}(Y-X\mid X=x).
 \]
 
-under the convention
-`partial_t rho = -partial_x(A rho) + partial_xx(D rho)`. Their difference is
-proportional to the conditional variance. The nonlocal operators retain every
-jump moment and are therefore the reference when
-`alpha` is not small; the Fokker--Planck operators are controlled moment
-truncations rather than exact substitutes.
+The earlier backward-Euler/upwind implementation combined a synchronous jump
+with a continuous generator step and added grid-dependent dissipation. The
+current Fokker--Planck update instead matches zeroth, first, and second
+*discrete destination moments* of the reference kernel to roundoff, with at
+most four nonzeros per source row. This makes the comparison conservative,
+positive, time-semantics matched, and fast. The nonlocal Deffuant operator
+retains the third and higher conditional moments and is therefore the
+reference when `alpha` is not small.
 
 Both representations use the same cell-integrated confidence geometry. The
 raw second moment and Deffuant jump destinations use cached five-point

@@ -1,8 +1,10 @@
 # Mesoscopic density solver
 
-This package solves the no-repost/no-history pair-closure Fokker--Planck system
-of the extended HK model on a uniform cell-centered finite-volume grid. The
-state contains node probability mass
+This package solves the no-repost/no-history pair closure of the extended HK
+model on a uniform cell-centered grid. Opinion updating can use the full
+nonlocal kernel or a sparse discrete-time Fokker--Planck closure which matches
+the full kernel's first two destination moments row by row on that same grid.
+The state contains node probability mass
 `rho[i]` and directed edges per agent `edge[i, j]`, with invariants
 
 ```text
@@ -14,10 +16,10 @@ sum_j edge[i, j] = mean_degree * rho[i]
 The microscopic and scan configurations use a fixed integer out-degree. Every
 step validates nonnegativity and all three invariants. Negative roundoff below
 the tolerance is zeroed, but a material error is not renormalized or rescaled.
-Parameter validation requires
-`dt * rewiring <= 1` for the explicit rewiring source. Backward-Euler
-transport--diffusion is an M-matrix solve and has no CFL rejection, although
-time-step refinement remains necessary for accuracy.
+Parameter validation requires `dt * rewiring <= 1` and
+`dt * influence <= 1`. Both opinion transitions are positive row-stochastic
+matrices. The moment closure has at most four nonzeros per source row;
+exogenous no-flux diffusion remains a backward-Euler M-matrix solve.
 
 ## Model scope
 

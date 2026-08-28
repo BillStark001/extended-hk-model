@@ -11,6 +11,7 @@ from ehk.modeling.mesoscopic.solver import (
     _deffuant_transition_from_selection,
     _finite_volume_system,
     _hk_transition_from_selection,
+    _moment_matched_transition,
     _recommendation_channels,
     _recommendation_kernel,
     _validate_state,
@@ -149,6 +150,38 @@ class KineticSolverTests(unittest.TestCase):
         hk_transition = _hk_transition_from_selection(x, influence, selection)
         np.testing.assert_allclose(hk_transition @ x, expected, atol=1e-14)
 
+    def test_moment_closure_matches_discrete_reference_moments(self):
+        x = np.linspace(-1.0, 1.0, 31)
+        rng = np.random.default_rng(20260828)
+        reference = rng.random((x.size, x.size))
+        reference /= reference.sum(axis=1, keepdims=True)
+        closure = _moment_matched_transition(x, reference)
+
+        self.assertLessEqual(int(np.diff(closure.indptr).max()), 4)
+        np.testing.assert_allclose(
+            np.asarray(closure.sum(axis=1)).ravel(), 1.0, atol=1e-14
+        )
+        np.testing.assert_allclose(closure @ x, reference @ x, atol=5e-12)
+        np.testing.assert_allclose(closure @ (x * x), reference @ (x * x), atol=5e-12)
+
+    def test_hk_full_and_moment_closed_updates_coincide(self):
+        common = {
+            "grid_size": 41,
+            "steps": 30,
+            "record_every": 5,
+            "epsilon": 0.4,
+            "influence": 0.1,
+            "rewiring": 0.01,
+            "noise_diffusion": 1e-5,
+            "recsys": "opinion_random",
+            "recommendation_steepness": 4.0,
+            "dynamics": "hk",
+        }
+        jump = solve(KineticParameters(opinion_method="nonlocal_jump", **common))
+        closure = solve(KineticParameters(opinion_method="fokker_planck", **common))
+        np.testing.assert_allclose(closure.rho, jump.rho, atol=2e-13)
+        np.testing.assert_allclose(closure.edge, jump.edge, atol=2e-12)
+
     def test_deffuant_solver_conserves_mass_and_fixed_out_degree(self):
         for dynamics in ("hk", "deffuant"):
             for method in ("fokker_planck", "nonlocal_jump"):
@@ -207,7 +240,7 @@ class KineticSolverTests(unittest.TestCase):
         }
         hk = solve(KineticParameters(dynamics="hk", **common))
         deffuant = solve(KineticParameters(dynamics="deffuant", **common))
-        self.assertGreater(float(np.max(hk.endogenous_diffusion)), 0.0)
+        np.testing.assert_allclose(hk.endogenous_diffusion, 0.0, atol=0.0)
         self.assertGreater(
             float(np.max(deffuant.endogenous_diffusion - hk.endogenous_diffusion)),
             0.0,
@@ -219,14 +252,14 @@ class KineticSolverTests(unittest.TestCase):
         )
         coefficient = 0.5 * common["influence"] ** 2
         np.testing.assert_allclose(
-            deffuant.endogenous_diffusion[0] - hk.endogenous_diffusion[0],
+            deffuant.endogenous_diffusion[0],
             coefficient * deffuant.displacement_variance[0],
             atol=1e-15,
         )
         np.testing.assert_allclose(
             deffuant.displacement_second_moment[0],
             deffuant.displacement_variance[0]
-            + 2.0 * hk.endogenous_diffusion[0] / common["influence"] ** 2,
+            + deffuant.velocity[0] ** 2 / common["influence"] ** 2,
             atol=1e-15,
         )
 
@@ -247,19 +280,18 @@ class KineticSolverTests(unittest.TestCase):
                 self.assertIsNotNone(trajectory.structural_score)
                 self.assertEqual(trajectory.structural_score.shape, (3, 11, 11))
 
-    def test_implicit_transport_does_not_impose_a_courant_rejection(self):
-        trajectory = solve(
-            KineticParameters(
-                grid_size=31,
-                influence=0.75,
-                rewiring=0.0,
-                dt=2.0,
-                steps=1,
-                record_every=1,
+    def test_discrete_opinion_step_rejects_oversized_compromise(self):
+        with self.assertRaisesRegex(ValueError, "dt \\* influence"):
+            solve(
+                KineticParameters(
+                    grid_size=31,
+                    influence=0.75,
+                    rewiring=0.0,
+                    dt=2.0,
+                    steps=1,
+                    record_every=1,
+                )
             )
-        )
-        self.assertGreaterEqual(float(trajectory.rho.min()), 0.0)
-        self.assertAlmostEqual(float(trajectory.rho[-1].sum()), 1.0, places=13)
 
     def test_nonfinite_and_noninteger_parameters_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "must be finite"):

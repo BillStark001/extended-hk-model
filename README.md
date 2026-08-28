@@ -226,7 +226,7 @@ Each simulation produces:
 
 ### Mesoscopic density solver
 
-The independent Python solver under `theory/mesoscopic/` uses the reusable model in `src/ehk/modeling/mesoscopic/` to evolve opinion density, conditional opinion velocity, and directed edge density without reposts or historical posts. It uses conservative cell-centered finite volumes, backward-Euler no-flux transport--diffusion, and an explicit one-for-one rewiring source. It rejects material invariant errors rather than projecting them away (only sub-tolerance negative roundoff is zeroed), retains KDE tails at the physical distance boundaries, linearly interpolates threshold crossings, and writes source-hashed run metadata. It supports Random, Opinion, OpinionM9, L0-Structure, and L0-StructureM9 pair-closure kernels.
+The independent Python solver under `theory/mesoscopic/` uses the reusable model in `src/ehk/modeling/mesoscopic/` to evolve opinion density, conditional opinion velocity, and directed edge density without reposts or historical posts. Opinion updating is either a full nonlocal push-forward or a sparse discrete-time Fokker--Planck closure that matches the full kernel's first two destination moments on the same grid. Both use conservative sparse transport; exogenous no-flux diffusion uses a backward-Euler finite-volume step, and rewiring is an explicit one-for-one source. The solver rejects material invariant errors rather than projecting them away (only sub-tolerance negative roundoff is zeroed), retains KDE tails at the physical distance boundaries, linearly interpolates threshold crossings, and writes source-hashed run metadata. It supports Random, Opinion, OpinionM9, L0-Structure, and L0-StructureM9 pair-closure kernels.
 
 ``` bash
 python -m theory.mesoscopic.single_run

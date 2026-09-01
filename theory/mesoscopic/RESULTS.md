@@ -131,7 +131,7 @@ interpolated crossing times:
 
 ```sh
 PYTHONPATH=src:. python -m pytest \
-  tests/modeling/test_mesoscopic_solver.py \
+  tests/modeling/test_go_observables.py \
   tests/unit/test_mesoscopic_cli_utils.py \
   tests/unit/test_joint_spectrum.py \
   tests/unit/test_spectrum_steady_states.py -q

@@ -18,7 +18,8 @@ There are some concepts renamed in the preprint, including:
 ## Repository Structure
 
 ```
-├── (Go runtime moved to https://github.com/billstark001/social-media-models)
+├── (microscopic Go runtime: https://github.com/billstark001/social-media-models)
+├── (mesoscopic Go runtimes: https://github.com/billstark001/social-media-mesoscopic-models)
 ├── src/ehk/                # Reusable package: infrastructure, metrics, micro adapter, models
 ├── theory/                 # Mesoscopic and analytic theory tasks
 ├── experiments/
@@ -34,9 +35,12 @@ There are some concepts renamed in the preprint, including:
     └── migrate.py          # Migrate legacy caches/events to SMP format
 ```
 
-## Branch Migration Summary (`feat/smp-model-migration`)
+## Runtime migration summary
 
-This branch migrated the local runtime/parsing stack to the shared `social-media-models` project and its Python bindings.
+The local runtime/parsing stack was migrated to the shared
+[`social-media-models`](https://github.com/billstark001/social-media-models)
+project and its Python bindings. Mesoscopic evolution was subsequently moved to
+[`social-media-mesoscopic-models`](https://github.com/billstark001/social-media-mesoscopic-models).
 
 - Removed in-repo Go runtime (`ehk-model/`) and legacy parser package (`result_interp/`)
 - Simulation entry points now call `smp_bindings.simulation.run_simulations(...)`
@@ -69,41 +73,70 @@ Refer to the [paper](https://arxiv.org/abs/2601.16457) or the [repository docume
 
 ### Prerequisites
 
-- **Go** 1.20 or higher (for simulation engine)
+- **Go** compatible with the version declared by each Go repository's `go.mod`
 - **Python** 3.10 or higher (for orchestration and analysis)
+- **C compiler** for the microscopic runtime's SQLite dependency
 - **Required Python packages**: See `requirements.txt`
 
 ### Installation Steps
 
-1. **Clone the repository**
+1. **Clone the analysis repository and both runtimes**
 
 ``` bash
-git clone https://github.com/BillStark001/extended-hk-model.git
-cd extended-hk-model
+mkdir ehk-workspace
+cd ehk-workspace
+git clone https://github.com/billstark001/extended-hk-model.git
+git clone https://github.com/billstark001/social-media-models.git
+git clone https://github.com/billstark001/social-media-mesoscopic-models.git
 ```
 
-2. **Install Python dependencies**
+Keeping the three checkouts as siblings matches this repository's default
+runtime paths. Other layouts work through the environment variables below.
+
+2. **Build and install the microscopic runtime**
 
 ``` bash
-pip install -r requirements.txt
-pip install -e .
-```
-
-Also install `smp_bindings` from `social-media-models`:
-
-``` bash
-pip install git+https://github.com/billstark001/social-media-models
-```
-
-3. **Build Go simulation engine (separate repository)**
-
-``` bash
-git clone https://github.com/billstark001/social-media-models
 cd social-media-models
-go build -o smp .
+make build-all
+python -m pip install -e .
 ```
 
-4. **Configure workspace paths**
+This produces `smp` for simulations and `smp-probe` for frozen-state force
+measurements.
+
+3. **Build and install the mesoscopic runtimes**
+
+``` bash
+cd ../social-media-mesoscopic-models
+python -m pip install -e .
+make build
+make test
+make test-python
+```
+
+`make build` produces `bin/smp-kinetic` and `bin/smp-lifted`. On macOS,
+`GO_TAGS=accelerate make build test` selects the optional Accelerate backend;
+the default build is dependency-free pure Go. The command-line equivalents are
+also available through the Python build helper:
+
+``` bash
+smp-mesoscopic-build --command kinetic --backend purego
+smp-mesoscopic-build --command lifted --backend purego
+```
+
+The editable source installation is intentional: the build helper compiles the
+Go source in this checkout. A `pip install` of the bindings alone does not
+install prebuilt solver binaries.
+
+4. **Install this analysis package**
+
+``` bash
+cd ../extended-hk-model
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
+5. **Configure workspace paths**
 
 Create a `sim_ws.json` file defining workspace directories:
 
@@ -116,12 +149,14 @@ Create a `sim_ws.json` file defining workspace directories:
 }
 ```
 
-5. **Set environment variables**
+6. **Set environment variables**
 
 Create a `.env` file:
 
 ``` bash
 SMP_BINARY_PATH=/absolute/path/to/social-media-models/smp
+SMP_KINETIC_BINARY=/absolute/path/to/social-media-mesoscopic-models/bin/smp-kinetic
+SMP_LIFTED_BINARY=/absolute/path/to/social-media-mesoscopic-models/bin/smp-lifted
 SIMULATION_WS_PATH=/absolute/path/to/sim_ws.json
 SIMULATION_STAT_DIR=/path/to/statistics/output
 SIMULATION_INSTANCE_NAME=gradation  # or epsilon, replicate, mech
@@ -224,19 +259,56 @@ Each simulation produces:
 
 ## Data Analysis
 
-### Mesoscopic density solver
+### Mesoscopic analysis orchestration
 
-The independent Python solver under `theory/mesoscopic/` uses the reusable model in `src/ehk/modeling/mesoscopic/` to evolve opinion density, conditional opinion velocity, and directed edge density without reposts or historical posts. Opinion updating is either a full nonlocal push-forward or a sparse discrete-time Fokker--Planck closure that matches the full kernel's first two destination moments on the same grid. Both use conservative sparse transport; exogenous no-flux diffusion uses a backward-Euler finite-volume step, and rewiring is an explicit one-for-one source. The solver rejects material invariant errors rather than projecting them away (only sub-tolerance negative roundoff is zeroed), retains KDE tails at the physical distance boundaries, linearly interpolates threshold crossings, and writes source-hashed run metadata. It supports Random, Opinion, OpinionM9, L0-Structure, and L0-StructureM9 pair-closure kernels.
+This repository no longer contains a mesoscopic time-evolution or stochastic
+terminal solver. Every current trajectory and terminal-probability experiment
+calls the Go `smp-kinetic` or `smp-lifted` runtime from
+`social-media-mesoscopic-models`; the small module under
+`src/ehk/modeling/mesoscopic/` only translates requests and decoded responses.
+The Go kinetic runtime exposes explicit `measure` and `fokker_planck` paths,
+returns online observables, and can return only the requested `rho`, `edge`,
+velocity, and rewiring-flux snapshots. Install `smp_meso_bindings`, build the
+binaries there, and set `SMP_KINETIC_BINARY` when the sibling checkout is not
+at its standard location. Requests can also be sent directly to the Go JSONL
+interfaces; their complete, explicit schemas are documented in the
+[`social-media-mesoscopic-models` README](https://github.com/billstark001/social-media-mesoscopic-models#lifted-request).
+
+For a saved explicit request, the Go commands support a single JSON request or
+a recoverable JSONL batch:
 
 ``` bash
-python -m theory.mesoscopic.single_run
-python -m theory.mesoscopic.single_run --noise 1e-5 --tag noise_1e-5
-python -m theory.mesoscopic.phase_scan
-python -m theory.mesoscopic.recommender_scan --jobs 4
+/path/to/smp-kinetic run @kinetic-request.json
+/path/to/smp-lifted batch < lifted-requests.jsonl > lifted-responses.jsonl
+```
+
+Python scans should reuse a long-lived batch process through
+`smp_meso_bindings.run_kinetic_batch` or `run_lifted_batch_parallel`; they
+should not launch one solver process per parameter point.
+
+``` bash
+SMP_KINETIC_BINARY=/path/to/smp-kinetic python -m theory.mesoscopic.single_run
+python -m theory.mesoscopic.phase_scan --kinetic-binary /path/to/smp-kinetic
+python -m theory.mesoscopic.recommender_scan \
+  --kinetic-binary /path/to/smp-kinetic --jobs 4
 python -m theory.mesoscopic.spectrum_check
 python -m theory.mesoscopic.joint_spectrum
 python -m theory.mesoscopic.convergence_report
+python -m experiments.theory_guided.macroscopic_timescale_ratio.run \
+  --grid-size 161 --dynamics hk --opinion-method measure \
+  --epsilon 0.45 --jobs 8 --dry-run
 ```
+
+The time-scale scan defaults to the paper's current kinetic protocol
+(`B=161`, `measure`, `epsilon=0.45`, zero background noise). Its CLI keeps
+`hk`/`deffuant`, `measure`/`fokker_planck`, and confidence radius explicit.
+Transition offsets fit the same continuous pathway index shown in the
+heatmaps; the older first-passage binary fit is retained only in archived
+experiments.
+
+The local spectrum and convergence modules are reduced-operator diagnostics
+and cache/report tooling; they do not advance the current mesoscopic state and
+are not substitutes for either Go runtime.
 
 See `theory/mesoscopic/README.md` for assumptions and reproduction commands,
 and `theory/mesoscopic/RESULTS.md` for the corrected multi-resolution results.
@@ -246,8 +318,8 @@ and `theory/mesoscopic/RESULTS.md` for the corrected multi-resolution results.
 The event database tracks three event types:
 
 1. **Rewiring Events**: Network structure changes
-2. **Tweet Events**: Posts and retweets with opinion values
-3. **ViewTweets Events**: Detailed content exposure records
+2. **Post events**: Posts and reposts with opinion values
+3. **View-post events**: Detailed content exposure records
 
 ### Analysis Scripts
 
@@ -267,7 +339,7 @@ polarization = DistanceCalculator(sample_count=len(opinions)).calculate(graph, o
 
 The `experiments/paper/scenarios.py` module defines the paper scenarios, while reusable metadata construction lives in `ehk.micro.scenarios`:
 
-- **all_scenarios_grad**: 10 simulations × 8 rewiring rates × 8 decay rates × 4 retweet rates × 4 recommendation systems
+- **all_scenarios_grad**: 12 simulations × 8 rewiring rates × 8 influence rates × 4 repost rates × 4 recommendation systems
 - **all_scenarios_eps**: 100 simulations × 16 tolerance values
 - **all_scenarios_rep**: 100 replications × 2 recommendation systems
 - **all_scenarios_mech**: 9 mechanism-focused configurations
@@ -276,29 +348,12 @@ The `experiments/paper/scenarios.py` module defines the paper scenarios, while r
 
 ### Adding Custom Recommendation Systems
 
-Follow these steps to create a custom recommendation system:
-
-**Step 1:** Implement the `HKModelRecommendationSystem` interface in Go:
-
-``` go
-type CustomRecsys struct {
-    model.BaseRecommendationSystem
-    Model *model.HKModel
-    // Your custom fields
-}
-
-func (r *CustomRecsys) Recommend(agent *model.HKAgent, neighborIDs map[int64]bool, count int) []*model.TweetRecord {
-    // Your recommendation logic
-}
-```
-
-**Step 2:** Register in `simulation/scenario-metadata.go`:
-
-``` go
-RECSYS_FACTORY["CustomType"] = func(m *model.HKModel) model.HKModelRecommendationSystem {
-    return NewCustomRecsys(m)
-}
-```
+Recommendation implementations now live in the external microscopic runtime.
+Implement the generic `model.SMPModelRecommendationSystem[O, P]` interface
+under `social-media-models/recsys`, then register its factory in
+`social-media-models/simulation/scenario-metadata.go`. See that repository's
+current interfaces and built-in recommenders instead of copying the historical
+HK-specific API.
 
 ### Modifying Agent Behavior
 

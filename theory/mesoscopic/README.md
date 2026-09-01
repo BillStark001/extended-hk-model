@@ -1,10 +1,11 @@
-# Mesoscopic density solver
+# Mesoscopic analyses driven by the Go runtime
 
-This package solves the no-repost/no-history pair closure of the extended HK
-model on a uniform cell-centered grid. Opinion updating can use the full
-nonlocal kernel or a sparse discrete-time Fokker--Planck closure which matches
-the full kernel's first two destination moments row by row on that same grid.
-The state contains node probability mass
+This package contains analysis and plotting code only. All kinetic evolution,
+including runs that request `rho`, `edge`, velocity, or rewiring-flux
+snapshots, is performed by the external Go runtime. `phase_scan` and
+`recommender_scan` normally request online scalar series through the
+binary-array protocol. The kinetic state contains
+node probability mass
 `rho[i]` and directed edges per agent `edge[i, j]`, with invariants
 
 ```text
@@ -24,12 +25,13 @@ exogenous no-flux diffusion remains a backward-Euler M-matrix solve.
 ## Model scope
 
 - Random recommendation is exact under continuum random mixing.
-- Opinion recommendation is a soft Gaussian opinion kernel.
+- Opinion recommendation is the microscopic triangular similarity score raised
+  to the configured steepness.
 - L0-Structure is an outgoing-common-neighbor pair proxy. Exact directed
   common-neighbor top-k ranking needs wedge state, candidate masks, and score
   order statistics.
-- OpinionM9 and StructureM9 use one Random and nine core slots at the standard
-  `recsys_count=10`; finite-slot eligibility is retained.
+- `recommendation_random_ratio=0.1` mixes one-tenth Random mass into the ranked
+  kernel; finite-list eligibility is retained explicitly.
 - `I_p`, `I_s`, and `I_w` follow the microscopic statistics conventions.
   Distance KDEs retain four minimum-bandwidths of tail outside `[0, 2]`.
   `I_h` uses the uniform baseline `epsilon - epsilon**2 / 4`.
@@ -40,31 +42,32 @@ exogenous no-flux diffusion remains a backward-Euler M-matrix solve.
 Run from the repository root with the source tree on `PYTHONPATH`:
 
 ```sh
-PYTHONPATH=src:. python -m theory.mesoscopic.single_run
-PYTHONPATH=src:. python -m theory.mesoscopic.phase_scan
-PYTHONPATH=src:. python -m theory.mesoscopic.recommender_scan --jobs 4
+KINETIC_BINARY=/absolute/path/to/smp-kinetic
+SMP_KINETIC_BINARY="$KINETIC_BINARY" PYTHONPATH=src:. python -m theory.mesoscopic.single_run
+PYTHONPATH=src:. python -m theory.mesoscopic.phase_scan \
+  --kinetic-binary "$KINETIC_BINARY"
+PYTHONPATH=src:. python -m theory.mesoscopic.recommender_scan \
+  --kinetic-binary "$KINETIC_BINARY" --jobs 4
 PYTHONPATH=src:. python -m theory.mesoscopic.spectrum_check
 PYTHONPATH=src:. python -m theory.mesoscopic.joint_spectrum
 PYTHONPATH=src:. python -m theory.mesoscopic.spectrum_steady_states --jobs 3
-PYTHONPATH=src:. python -m theory.mesoscopic.l1_comparison
+SMP_KINETIC_BINARY="$KINETIC_BINARY" PYTHONPATH=src:. python -m theory.mesoscopic.l1_comparison
 ```
 
-`l1_comparison` holds every numerical choice fixed and compares the existing
-pair-only `structure_random_l0` kernel with `structure_random_l1`.  L1 evolves
-the four directed wedge channels `out/out`, `out/in`, `in/out`, and `in/in`
-through the same conservative finite-volume transport used by `rho` and
-`edge`.  Rewiring uses a documented turnover-to-independent-target moment
-closure.  L0 remains a supported kernel.  L1 accepts only structural-score
-power one; powers such as four require additional score moments and are not
-silently approximated by the first wedge moment.
+`l1_comparison` holds every numerical choice fixed and compares the Go
+pair-only `structure_random_l0` kernel with Go `structure_random_l1`. The latter
+uses the retained directional-wedge score and an explicit capped-Poisson
+score-moment closure, so its steepness remains configurable.
 
 The paper's resolution check is:
 
 ```sh
 PYTHONPATH=src:. python -m theory.mesoscopic.recommender_scan \
+  --kinetic-binary "$KINETIC_BINARY" \
   --grid-size 61 --output-dir outputs/theory/mesoscopic/recsys_pde_noise_1e-5_grid61 \
   --jobs 2 --skip-plots
 PYTHONPATH=src:. python -m theory.mesoscopic.recommender_scan \
+  --kinetic-binary "$KINETIC_BINARY" \
   --grid-size 101 --output-dir outputs/theory/mesoscopic/recsys_pde_noise_1e-5_grid101 \
   --jobs 2 --skip-plots
 PYTHONPATH=src:. python -m theory.mesoscopic.convergence_report \
@@ -78,8 +81,8 @@ The default five-kernel scan uses 81 cells, `D0=1e-5`, 4,000 time steps, and
 the eight rates `0.005, 0.01, 0.03, 0.05, 0.1, 0.3, 0.5, 1` for both influence
 and rewiring. It stores index trajectories rather than full edge-field
 histories. Each analysis writes `run_metadata.json` with its command,
-parameters, package versions, git state, and SHA-256 hashes of the relevant
-solver and analysis sources.
+parameters, package versions, git state, the external binary identity, and
+SHA-256 hashes of the request adapter and analysis sources.
 
 Outputs live under `outputs/theory/mesoscopic/`; numerical arrays and metadata
 are stored with each analysis, and plots are placed in the shared `figures/`

@@ -1,42 +1,35 @@
-# Terminal-generator factorial
+# Go base-layer terminal probabilities
 
-This workflow makes two choices orthogonal instead of hiding them inside
-different historical scripts:
+This workflow sends explicit `base`-layer requests to the external
+`smp-lifted` runtime. The historical Python pair/score-moment factorial has
+been removed: this repository constructs requests, supervises long-lived Go
+batch processes, and records responses, but performs no stochastic state
+evolution itself.
 
-| | unsplit | fast-slow |
-| --- | --- | --- |
-| pair state | `(rho, E)` | `(rho, E)` with conditional fast rewiring |
-| score moments | `(rho, E, W, S2, S4)` | the same lifted state with conditional fast rewiring |
+The directory name is retained only to keep the module discoverable. Its old
+four-cell output schema and the `historical-12` preset are not supported.
 
-All four cells call `ehk.modeling.terminal_generator` and therefore use the
-same initialization, synchronous opinion kernel, tau-leap rewiring law,
-terminal classification, and random-number conventions.  In a `fast_slow`
-cell, conditional fast absorption is applied only when `q / alpha` reaches the
-configured threshold; the row records whether it was actually applied.
-
-From the repository root:
+Install and build `social-media-mesoscopic-models`, then run from this
+repository root:
 
 ```sh
-PYTHONPATH=src:. python -m \
-  experiments.theory_guided.terminal_generator_factorial.run smoke
+export SMP_LIFTED_BINARY=/absolute/path/to/social-media-mesoscopic-models/bin/smp-lifted
 
 PYTHONPATH=src:. python -m \
-  experiments.theory_guided.terminal_generator_factorial.run \
-  historical-12 --jobs 8
+  experiments.theory_guided.terminal_generator_factorial.run smoke --dry-run
 
 PYTHONPATH=src:. python -m \
-  experiments.theory_guided.terminal_generator_factorial.run \
-  paper-figure3 --jobs 8
+  experiments.theory_guided.terminal_generator_factorial.run smoke \
+  --jobs 1 --workers-per-request 2
+
+PYTHONPATH=src:. python -m \
+  experiments.theory_guided.terminal_generator_factorial.run paper-figure3 \
+  --jobs 4 --workers-per-request 2
 ```
 
-`historical-12` describes the old 4-case x 3-recommender x 40-path protocol,
-but now expands it to all four factorial cells.  It is intentionally not run
-as part of tests.  The smoke preset exercises all cells with two short paths.
-`paper-figure3` uses the exact four rates and five recommender columns of the
-matched main-paper experiment; its full factorial expansion contains 3,200
-paths and is likewise configuration-only in this change.
-
-Archived paper artifacts made with the old pair Langevin generator and the
-later lifted synchronous generator are useful provenance, but they are not a
-strict state-level comparison because their event laws differ.  Use this
-workflow for new controlled comparisons.
+Budget CPU as approximately `jobs × workers-per-request`. Each run saves the
+complete JSONL requests, complete Go responses, a flat probability table, and
+source/binary provenance. The point-probability category order is
+`k1,k2,k3,k4plus,censored`. The paper preset uses 80 Go base paths for each of
+its 20 conditions; the independently generated microscopic reference has 40
+runs per condition.

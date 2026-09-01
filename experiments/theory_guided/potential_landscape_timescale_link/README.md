@@ -1,7 +1,7 @@
 # Potential-landscape link to the macroscopic time-scale scan
 
 This targeted experiment reuses the seven recommendation scenarios and the
-`B=81`, 4000-step recording protocol of the macroscopic time-scale scan. It
+`B=161`, 4000-step recording protocol of the macroscopic time-scale scan. It
 solves two seven-case designs:
 
 1. `common_rates`: every scenario at `alpha=q=0.1`;
@@ -17,6 +17,7 @@ skips completed cases.
 PYTHONPATH=src:. python -m \
   experiments.theory_guided.potential_landscape_timescale_link.run \
   --transition-offsets /path/to/macroscopic_timescale_ratio/transition_offsets.csv \
+  --grid-size 161 --dynamics hk --opinion-method measure --epsilon 0.45 \
   --output-dir /path/to/potential_landscape_timescale_link \
   --jobs 4
 ```

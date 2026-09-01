@@ -1,14 +1,14 @@
 # Paper-aligned macroscopic time-scale scan
 
-This experiment reruns the paper Figure 2 rate grid at `B=81` for seven
-recommendation closures and evaluates the operator-resolved competition ratio
-at two macro-progress levels,
+This experiment reruns a seven-closure rate grid at `B=161` by default and
+evaluates the operator-resolved initial competition ratio
 
 `Gamma(u) = [d I_h / dt]_rewiring,+ / [d I_p / dt]_opinion,+`,
 
-where `u = I_p + I_h`.  The requested diagnostics are `Gamma(0)` and
-`Gamma(0.1)`.  The latter is interpolated between densely recorded early
-states; it is not the older integrated-window ratio.
+where `u = I_p + I_h`.  The reported diagnostic is `Gamma(0)`, evaluated at
+the common random-mixing initial state.  Configuration transition centers are
+fit to the same continuous `I_w` shown in the heatmaps; the older binary
+first-passage response is no longer mixed into this plot.
 
 The L1, zeta=4 column is explicitly a mean-power closure diagnostic.  The
 state retains the first structural-score moment and evaluates the nonlinear
@@ -18,7 +18,8 @@ Run the scan (safe to resume in the same output directory):
 
 ```bash
 PYTHONPATH=src:. python -m experiments.theory_guided.macroscopic_timescale_ratio.run \
-  --grid-size 81 --jobs 8 --output-dir /path/to/artifacts/macroscopic_timescale_ratio
+  --grid-size 161 --dynamics hk --opinion-method measure --epsilon 0.45 \
+  --jobs 8 --output-dir /path/to/artifacts/macroscopic_timescale_ratio
 ```
 
 Regenerate tables and figures without solving trajectories:
@@ -35,7 +36,7 @@ Audit an interrupted output directory without starting any worker:
 
 ```bash
 PYTHONPATH=src:. python -m experiments.theory_guided.macroscopic_timescale_ratio.run \
-  --grid-size 81 --jobs 8 --output-dir /path/to/artifacts/macroscopic_timescale_ratio \
+  --grid-size 161 --jobs 8 --output-dir /path/to/artifacts/macroscopic_timescale_ratio \
   --dry-run
 ```
 

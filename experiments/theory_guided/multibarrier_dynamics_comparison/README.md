@@ -3,8 +3,8 @@
 This experiment separates two opinion dynamics from two numerical
 representations:
 
-- `hk/nonlocal_jump`: deterministic conditional-mean push-forward;
-- `deffuant/nonlocal_jump`: full random-neighbor compromise kernel;
+- `hk/measure`: deterministic strong-form measure push-forward;
+- `deffuant/measure`: full random-neighbor compromise measure kernel;
 - `hk/fokker_planck`: the same deterministic push-forward, because a
   zero-conditional-variance jump is already fixed by its first two moments;
 - `deffuant/fokker_planck`: a sparse positive closure built only from each

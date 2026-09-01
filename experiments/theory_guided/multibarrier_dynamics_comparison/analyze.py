@@ -48,9 +48,9 @@ def paired_differences(rows: list[dict[str, str]]) -> list[dict[str, object]]:
         groups[key][(row["dynamics"], row["opinion_method"])] = row
 
     expected = {
-        ("hk", "nonlocal_jump"),
+        ("hk", "measure"),
         ("hk", "fokker_planck"),
-        ("deffuant", "nonlocal_jump"),
+        ("deffuant", "measure"),
         ("deffuant", "fokker_planck"),
     }
     result = []
@@ -58,9 +58,9 @@ def paired_differences(rows: list[dict[str, str]]) -> list[dict[str, object]]:
         if set(group) != expected:
             missing = sorted(expected - set(group))
             raise ValueError(f"incomplete four-way comparison for {key}: {missing}")
-        hk_jump = group[("hk", "nonlocal_jump")]
+        hk_jump = group[("hk", "measure")]
         hk_fp = group[("hk", "fokker_planck")]
-        deffuant_jump = group[("deffuant", "nonlocal_jump")]
+        deffuant_jump = group[("deffuant", "measure")]
         deffuant_fp = group[("deffuant", "fokker_planck")]
         method_iw_hk = _difference(hk_jump, hk_fp, "I_w")
         method_iw_deffuant = _difference(deffuant_jump, deffuant_fp, "I_w")
@@ -73,7 +73,7 @@ def paired_differences(rows: list[dict[str, str]]) -> list[dict[str, object]]:
             "method_gap_I_w_hk": method_iw_hk,
             "method_gap_I_w_deffuant": method_iw_deffuant,
             "method_gap_I_w_max": max(method_iw_hk, method_iw_deffuant),
-            "dynamics_gap_I_w_nonlocal_jump": dynamics_iw_jump,
+            "dynamics_gap_I_w_measure": dynamics_iw_jump,
             "dynamics_gap_I_w_fokker_planck": dynamics_iw_fp,
             "dynamics_gap_I_w_max": max(dynamics_iw_jump, dynamics_iw_fp),
             "method_gap_barrier_hk": _difference(
@@ -82,7 +82,7 @@ def paired_differences(rows: list[dict[str, str]]) -> list[dict[str, object]]:
             "method_gap_barrier_deffuant": _difference(
                 deffuant_jump, deffuant_fp, "multiwell_barrier_peak"
             ),
-            "dynamics_gap_barrier_nonlocal_jump": _difference(
+            "dynamics_gap_barrier_measure": _difference(
                 hk_jump, deffuant_jump, "multiwell_barrier_peak"
             ),
             "dynamics_gap_barrier_fokker_planck": _difference(
@@ -105,7 +105,7 @@ def paired_differences(rows: list[dict[str, str]]) -> list[dict[str, object]]:
             float(output["method_gap_barrier_deffuant"]),
         )
         output["dynamics_gap_barrier_max"] = max(
-            float(output["dynamics_gap_barrier_nonlocal_jump"]),
+            float(output["dynamics_gap_barrier_measure"]),
             float(output["dynamics_gap_barrier_fokker_planck"]),
         )
         result.append(output)

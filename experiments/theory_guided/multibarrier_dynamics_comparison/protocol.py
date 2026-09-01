@@ -21,7 +21,7 @@ DEFAULT_CONFIGURATIONS = (
     "structure_random_l0_zeta4",
 )
 DEFAULT_DYNAMICS = ("hk", "deffuant")
-DEFAULT_METHODS = ("nonlocal_jump", "fokker_planck")
+DEFAULT_METHODS = ("measure", "fokker_planck")
 DEFAULT_EPSILON_GRIDS = ((0.2, 161), (0.4, 161), (0.8, 161))
 
 

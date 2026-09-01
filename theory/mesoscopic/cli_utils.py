@@ -16,7 +16,7 @@ import numpy as np
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 REPRODUCIBILITY_SOURCES = (
-    "src/ehk/modeling/mesoscopic/solver.py",
+    "src/ehk/modeling/mesoscopic/go_kinetic.py",
     "src/ehk/modeling/opinion_cells.py",
     "src/ehk/metrics/density_indices.py",
     "src/ehk/metrics/macroscopic_timescale.py",

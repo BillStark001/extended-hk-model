@@ -1,4 +1,4 @@
-"""Run the resumable seven-scenario B=81 macro-time-scale scan."""
+"""Run the resumable seven-scenario macro-time-scale scan with Go."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 
 from ehk.metrics import (
-    calculate_channel_progress_snapshots,
+    calculate_initial_channel_snapshot,
     calculate_index_series,
 )
 from ehk.modeling.mesoscopic import KineticParameters, solve
@@ -59,11 +59,6 @@ class TimescaleCell:
   opinion_rate_gamma_0: float
   rewiring_rate_gamma_0: float
   gamma_0: float
-  gamma_0p1_time: float
-  gamma_0p1_reached: bool
-  opinion_rate_gamma_0p1: float
-  rewiring_rate_gamma_0p1: float
-  gamma_0p1: float
 
   @property
   def rate_ratio(self) -> float:
@@ -112,12 +107,18 @@ def solve_cell(
   )
   trajectory = solve(parameters, record_steps=selected_steps)
   indices = calculate_index_series(trajectory)
-  gamma_0, gamma_0p1 = calculate_channel_progress_snapshots(
-      trajectory,
-      indices,
-      progress_thresholds=(0.0, 0.1),
-      probe_dt=probe_dt,
+  opinion_probe = solve(
+      replace(
+          parameters,
+          rewiring=0.0,
+          noise_diffusion=0.0,
+          dt=probe_dt,
+          steps=1,
+          record_every=1,
+      ),
+      record_steps=(0, 1),
   )
+  gamma_0 = calculate_initial_channel_snapshot(trajectory, opinion_probe)
   t_polarization = first_crossing_or_nan(
       indices.time, indices.polarization
   )
@@ -142,11 +143,6 @@ def solve_cell(
       opinion_rate_gamma_0=gamma_0.opinion_polarization_rate,
       rewiring_rate_gamma_0=gamma_0.rewiring_homophily_rate,
       gamma_0=gamma_0.gamma,
-      gamma_0p1_time=gamma_0p1.time,
-      gamma_0p1_reached=gamma_0p1.reached,
-      opinion_rate_gamma_0p1=gamma_0p1.opinion_polarization_rate,
-      rewiring_rate_gamma_0p1=gamma_0p1.rewiring_homophily_rate,
-      gamma_0p1=gamma_0p1.gamma,
   )
 
 
@@ -162,7 +158,7 @@ def _protocol_payload(
       "rates": rates.tolist(),
       "scenarios": [asdict(scenario) for scenario in scenarios],
       "record_steps": list(selected_steps),
-      "gamma_progress_levels": [0.0, 0.1],
+      "gamma_progress_levels": [0.0],
       "probe_dt": probe_dt,
   }
 
@@ -266,11 +262,8 @@ def write_summary(
           "I_h_final",
           "I_s_final",
           "gamma_0",
-          "gamma_0p1",
-          "gamma_0p1_time",
       )
   }
-  reached = np.zeros(shape, dtype=bool)
   configuration_index = {
       scenario.key: index for index, scenario in enumerate(scenarios)
   }
@@ -288,15 +281,11 @@ def write_summary(
     fields["I_h_final"][index] = cell.homophily_final
     fields["I_s_final"][index] = cell.subjective_final
     fields["gamma_0"][index] = cell.gamma_0
-    fields["gamma_0p1"][index] = cell.gamma_0p1
-    fields["gamma_0p1_time"][index] = cell.gamma_0p1_time
-    reached[index] = cell.gamma_0p1_reached
   np.savez_compressed(
       output_dir / "timescale_ratio.npz",
       alpha=rates,
       q=rates,
       configuration=np.asarray([scenario.key for scenario in scenarios]),
-      gamma_0p1_reached=reached,
       **fields,
   )
 
@@ -323,7 +312,7 @@ def _terminate_executor(
   # ProcessPoolExecutor has no public immediate-stop operation.  Capture the
   # worker handles before shutdown clears them, terminate only this pool, and
   # then reap them.  This prevents a first Ctrl-C from waiting for several
-  # long B=81 L1 trajectories to finish.
+  # long high-resolution L1 trajectories to finish.
   process_map = getattr(executor, "_processes", None)
   processes = tuple(process_map.values()) if process_map else ()
   for process in processes:
@@ -334,17 +323,24 @@ def _terminate_executor(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
   parser = argparse.ArgumentParser(description=__doc__)
-  parser.add_argument("--grid-size", type=int, default=81)
+  parser.add_argument("--grid-size", type=int, default=161)
   parser.add_argument("--steps", type=int, default=4000)
   parser.add_argument("--dt", type=float, default=1.0)
   parser.add_argument("--early-until", type=int, default=200)
   parser.add_argument("--early-every", type=int, default=1)
   parser.add_argument("--record-every", type=int, default=20)
   parser.add_argument("--epsilon", type=float, default=0.45)
-  parser.add_argument("--noise", type=float, default=1e-5)
+  parser.add_argument("--noise", type=float, default=0.0)
+  parser.add_argument(
+      "--dynamics", choices=("hk", "deffuant"), default="hk"
+  )
+  parser.add_argument(
+      "--opinion-method",
+      choices=("measure", "fokker_planck"),
+      default="measure",
+  )
   parser.add_argument("--mean-degree", type=float, default=15.0)
   parser.add_argument("--recsys-count", type=int, default=10)
-  parser.add_argument("--random-mix", type=float, default=0.1)
   parser.add_argument("--opinion-tolerance", type=float, default=0.4)
   parser.add_argument("--random-ratio", type=float, default=0.0)
   parser.add_argument("--probe-dt", type=float, default=1.0)
@@ -361,7 +357,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
       "--output-dir",
       type=Path,
       default=(
-          MESOSCOPIC_OUTPUT.resolve() / "macroscopic_timescale_ratio_b81"
+          MESOSCOPIC_OUTPUT.resolve() / "macroscopic_timescale_ratio_b161"
       ),
   )
   parser.add_argument(
@@ -391,9 +387,10 @@ def main(argv: list[str] | None = None) -> None:
   )
   base = KineticParameters(
       epsilon=args.epsilon,
+      dynamics=args.dynamics,
+      opinion_method=args.opinion_method,
       mean_degree=args.mean_degree,
       recsys_count=args.recsys_count,
-      random_mix=args.random_mix,
       opinion_tolerance=args.opinion_tolerance,
       recommendation_random_ratio=args.random_ratio,
       noise_diffusion=args.noise,
@@ -470,7 +467,7 @@ def main(argv: list[str] | None = None) -> None:
     print(
         f"[{len(completed):03d}/{total}] {cell.configuration} "
         f"alpha={cell.alpha:g} q={cell.q:g} I_w={cell.pathway:.4f} "
-        f"Gamma(0.1)={cell.gamma_0p1:.4g}",
+        f"Gamma(0)={cell.gamma_0:.4g}",
         flush=True,
     )
 
@@ -516,7 +513,10 @@ def main(argv: list[str] | None = None) -> None:
   raw_arguments = sys.argv[1:] if argv is None else argv
   write_run_metadata(
       args.output_dir / "run_metadata.json",
-      analysis="seven-configuration B=81 macroscopic time-scale scan",
+      analysis=(
+          f"seven-configuration B={args.grid_size} {args.dynamics} "
+          f"{args.opinion_method} macroscopic time-scale scan"
+      ),
       command=shlex.join(
           [
               sys.executable,

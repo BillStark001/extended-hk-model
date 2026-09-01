@@ -1,4 +1,4 @@
-"""Run targeted B=81 potential landscapes selected by the time-scale scan."""
+"""Run targeted potential landscapes selected by the time-scale scan."""
 
 from __future__ import annotations
 
@@ -356,7 +356,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--common-alpha", type=float, default=0.1)
     parser.add_argument("--common-q", type=float, default=0.1)
     parser.add_argument("--transition-alpha", type=float, default=0.1)
-    parser.add_argument("--grid-size", type=int, default=81)
+    parser.add_argument("--grid-size", type=int, default=161)
     parser.add_argument("--steps", type=int, default=4000)
     parser.add_argument("--early-until", type=int, default=200)
     parser.add_argument("--early-every", type=int, default=1)
@@ -364,7 +364,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--persistence", type=int, default=3)
     parser.add_argument("--dt", type=float, default=1.0)
     parser.add_argument("--epsilon", type=float, default=0.45)
-    parser.add_argument("--noise", type=float, default=1e-5)
+    parser.add_argument("--noise", type=float, default=0.0)
+    parser.add_argument(
+        "--dynamics", choices=("hk", "deffuant"), default="hk"
+    )
+    parser.add_argument(
+        "--opinion-method",
+        choices=("measure", "fokker_planck"),
+        default="measure",
+    )
     parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 1, 4))
     parser.add_argument("--skip-analysis", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -394,9 +402,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     base = KineticParameters(
         epsilon=args.epsilon,
+        dynamics=args.dynamics,
+        opinion_method=args.opinion_method,
         mean_degree=15,
         recsys_count=10,
-        random_mix=0.1,
         opinion_tolerance=0.4,
         recommendation_random_ratio=0.0,
         noise_diffusion=args.noise,

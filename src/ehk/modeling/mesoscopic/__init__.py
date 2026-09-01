@@ -1,27 +1,29 @@
-"""Reusable mesoscopic model API."""
+"""Request/response adapters for the external Go mesoscopic solvers."""
 
-from .directional_wedge import DirectionalWedgeState
-from .solver import (
+from .go_kinetic import (
     KineticParameters,
+    KineticResolution,
     KineticTrajectory,
-    advance_deffuant_density,
-    advance_frozen_opinion_density,
-    advance_jump_density,
-    advance_opinion_density,
-    deffuant_transition_matrix,
-    opinion_transition_matrix,
+    ObservableResolution,
+    ObservableSeries,
+    ObservableThresholds,
+    kinetic_request,
     solve,
+    solve_observable_batch,
+    solve_trajectory,
+    solve_trajectory_batch,
 )
 
 __all__ = [
-    "DirectionalWedgeState",
     "KineticParameters",
+    "KineticResolution",
     "KineticTrajectory",
-    "advance_deffuant_density",
-    "advance_frozen_opinion_density",
-    "advance_jump_density",
-    "advance_opinion_density",
-    "deffuant_transition_matrix",
-    "opinion_transition_matrix",
+    "ObservableResolution",
+    "ObservableSeries",
+    "ObservableThresholds",
+    "kinetic_request",
     "solve",
+    "solve_observable_batch",
+    "solve_trajectory",
+    "solve_trajectory_batch",
 ]

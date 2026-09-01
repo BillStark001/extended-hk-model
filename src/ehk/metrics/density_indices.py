@@ -9,7 +9,7 @@ from numpy.typing import NDArray
 from scipy.stats import norm
 
 from ehk.metrics.homophily import normalize_homophily
-from ehk.modeling.mesoscopic.solver import FloatArray, KineticTrajectory
+from ehk.modeling.mesoscopic.go_kinetic import FloatArray, KineticTrajectory
 from ehk.modeling.opinion_cells import ConfidenceMode, confidence_geometry
 
 

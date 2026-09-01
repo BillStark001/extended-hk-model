@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "name": "terminal_generator_factorial_smoke",
+  "name": "go_base_terminal_smoke",
   "replicates": 2,
   "base_seed": 730001,
   "cases": [
@@ -15,9 +15,6 @@
     "mean_degree": 6,
     "recsys_count": 4,
     "epsilon": 0.45,
-    "max_steps": 20,
-    "fast_slow_ratio_threshold": 10.0,
-    "fast_max_steps": 100,
-    "fast_zero_checks": 4
+    "max_steps": 20
   }
 }

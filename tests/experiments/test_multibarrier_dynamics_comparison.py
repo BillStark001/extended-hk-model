@@ -84,7 +84,7 @@ class MultibarrierDynamicsComparisonTests(unittest.TestCase):
             )
             with np.load(checkpoints[0], allow_pickle=False) as arrays:
                 self.assertIn("multi_dominant_barrier_height", arrays.files)
-                self.assertIn("displacement_second_moment", arrays.files)
+                self.assertIn("velocity", arrays.files)
                 self.assertEqual(arrays["rho"].shape[-1], 11)
 
             import csv

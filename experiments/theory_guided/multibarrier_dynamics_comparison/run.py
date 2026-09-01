@@ -39,10 +39,10 @@ from experiments.theory_guided.multibarrier_dynamics_comparison.protocol import 
 from theory.mesoscopic.cli_utils import pathway_label, write_run_metadata
 from theory.paths import MESOSCOPIC_OUTPUT
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 IMPLEMENTATION_SOURCES = (
-    "src/ehk/modeling/mesoscopic/solver.py",
+    "src/ehk/modeling/mesoscopic/go_kinetic.py",
     "src/ehk/modeling/opinion_cells.py",
     "src/ehk/metrics/density_indices.py",
     "src/ehk/metrics/landscape_diagnostics.py",
@@ -185,11 +185,6 @@ def solve_case(
     t_homophily = _persistent_crossing(
         indices.time, indices.homophily, 0.5, persistence
     )
-    variance_mean = np.sum(trajectory.rho * trajectory.displacement_variance, axis=1)
-    second_moment_mean = np.sum(
-        trajectory.rho * trajectory.displacement_second_moment, axis=1
-    )
-    diffusion_mean = np.sum(trajectory.rho * trajectory.endogenous_diffusion, axis=1)
     row: dict[str, object] = {
         **case.payload(),
         "case_key": case.key,
@@ -219,12 +214,6 @@ def solve_case(
         "dominant_pair_switch_count": int(np.sum(multiwell.dominant_switch)),
         "well_birth_count_after_initial": int(np.sum(multiwell.well_birth_count[1:])),
         "well_death_count": int(np.sum(multiwell.well_death_count)),
-        "conditional_displacement_variance_peak": float(np.max(variance_mean)),
-        "conditional_displacement_variance_final": float(variance_mean[-1]),
-        "displacement_second_moment_peak": float(np.max(second_moment_mean)),
-        "displacement_second_moment_final": float(second_moment_mean[-1]),
-        "endogenous_diffusion_peak": float(np.max(diffusion_mean)),
-        "endogenous_diffusion_final": float(diffusion_mean[-1]),
     }
     arrays = {
         "schema_version": np.asarray(SCHEMA_VERSION),
@@ -238,12 +227,6 @@ def solve_case(
         "velocity": trajectory.velocity,
         "force": force,
         "potential": potential,
-        "conditional_displacement_variance": trajectory.displacement_variance,
-        "displacement_second_moment": trajectory.displacement_second_moment,
-        "endogenous_diffusion": trajectory.endogenous_diffusion,
-        "conditional_displacement_variance_mean": variance_mean,
-        "displacement_second_moment_mean": second_moment_mean,
-        "endogenous_diffusion_mean": diffusion_mean,
         "I_p": indices.polarization,
         "I_h": indices.homophily,
         "I_s": indices.subjective,
@@ -370,7 +353,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--noise", type=float, default=1e-5)
     parser.add_argument("--mean-degree", type=float, default=15.0)
     parser.add_argument("--recsys-count", type=int, default=10)
-    parser.add_argument("--random-mix", type=float, default=0.1)
     parser.add_argument("--opinion-tolerance", type=float, default=0.4)
     parser.add_argument("--random-ratio", type=float, default=0.0)
     parser.add_argument("--min-basin-mass", type=float, default=0.02)
@@ -428,7 +410,6 @@ def main(argv: list[str] | None = None) -> None:
     base = KineticParameters(
         mean_degree=args.mean_degree,
         recsys_count=args.recsys_count,
-        random_mix=args.random_mix,
         opinion_tolerance=args.opinion_tolerance,
         recommendation_random_ratio=args.random_ratio,
         noise_diffusion=args.noise,

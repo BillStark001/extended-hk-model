@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "name": "terminal_generator_factorial_paper_figure3",
-  "replicates": 40,
+  "name": "go_base_terminal_paper_figure3",
+  "replicates": 80,
   "base_seed": 20260818,
   "cases": [
     {"key": "low_rewiring", "influence": 0.046415888336127795, "rewiring": 0.001},
@@ -22,9 +22,6 @@
     "mean_degree": 15,
     "recsys_count": 10,
     "epsilon": 0.45,
-    "max_steps": 20000,
-    "fast_slow_ratio_threshold": 20.0,
-    "fast_max_steps": 20000,
-    "fast_zero_checks": 20
+    "max_steps": 20000
   }
 }

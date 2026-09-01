@@ -137,9 +137,9 @@ def _plot_selected(scan_dir: Path, selected: list[dict[str, object]]) -> None:
     columns = min(3, len(selected))
     rows = math.ceil(len(selected) / columns)
     combinations = (
-        ("hk", "nonlocal_jump", "tab:blue", "-", "HK / jump"),
+        ("hk", "measure", "tab:blue", "-", "HK / measure"),
         ("hk", "fokker_planck", "tab:blue", "--", "HK / F-P"),
-        ("deffuant", "nonlocal_jump", "tab:orange", "-", "Deffuant / jump"),
+        ("deffuant", "measure", "tab:orange", "-", "Deffuant / measure"),
         ("deffuant", "fokker_planck", "tab:orange", "--", "Deffuant / F-P"),
     )
     density_figure, density_axes = plt.subplots(

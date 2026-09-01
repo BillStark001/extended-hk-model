@@ -1,8 +1,7 @@
 """Solve the paper's 10x10 logarithmic alpha/q grid with the mesoscopic model.
 
-This command does not invoke the Go microscopic simulator. It evolves the
-node and directed-edge density fields from :mod:`ehk.modeling.mesoscopic.solver`, then
-plots all 100 trajectories with the full-model index definitions.
+This command invokes the Go kinetic solver through long-lived JSONL batch
+processes. Only online density-observable series cross the process boundary.
 
 Run as ``python -m theory.mesoscopic.phase_scan``.
 """
@@ -11,10 +10,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-import os
 import shlex
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -23,16 +20,14 @@ from matplotlib.colors import Normalize, TwoSlopeNorm
 import numpy as np
 
 from ehk.common.plotting import setup_paper_params
-from ehk.metrics import calculate_index_series
 from ehk.modeling.mesoscopic import (
     KineticParameters,
-    solve,
+    ObservableResolution,
+    ObservableSeries,
+    ObservableThresholds,
+    solve_observable_batch,
 )
-from theory.mesoscopic.cli_utils import (
-    first_crossing_or_nan,
-    pathway_label,
-    write_run_metadata,
-)
+from theory.mesoscopic.cli_utils import pathway_label, write_run_metadata
 from theory.paths import MESOSCOPIC_OUTPUT
 
 
@@ -53,32 +48,21 @@ class SweepResult:
     t_homophily: float
 
 
-def _solve_case(
+def _sweep_result(
     q_index: int,
     alpha_index: int,
-    base: KineticParameters,
+    values: ObservableSeries,
 ) -> SweepResult:
-    params = replace(
-        base,
-        influence=float(RATES[alpha_index]),
-        rewiring=float(RATES[q_index]),
-    )
-    trajectory = solve(params)
-    indices = calculate_index_series(trajectory)
     return SweepResult(
         q_index=q_index,
         alpha_index=alpha_index,
-        time=indices.time,
-        polarization=indices.polarization,
-        homophily=indices.homophily,
-        subjective=indices.subjective,
-        pathway=indices.pathway,
-        t_polarization=first_crossing_or_nan(
-            indices.time, indices.polarization
-        ),
-        t_homophily=first_crossing_or_nan(
-            indices.time, indices.homophily
-        ),
+        time=values.time,
+        polarization=values.polarization,
+        homophily=values.homophily,
+        subjective=values.subjective,
+        pathway=values.pathway,
+        t_polarization=values.polarization_first_passage,
+        t_homophily=values.homophily_first_passage,
     )
 
 
@@ -129,7 +113,6 @@ def _save_data(
         epsilon=np.asarray(params.epsilon),
         noise_diffusion=np.asarray(params.noise_diffusion),
         recsys=np.asarray(params.recsys),
-        random_mix=np.asarray(params.random_mix),
         **arrays,
     )
     fieldnames = [
@@ -331,20 +314,51 @@ def _plot_summary(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--kinetic-binary", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=4000)
     parser.add_argument("--record-every", type=int, default=20)
     parser.add_argument("--grid-size", type=int, default=81)
     parser.add_argument("--dt", type=float, default=1.0)
     parser.add_argument("--epsilon", type=float, default=0.45)
     parser.add_argument("--noise", type=float, default=1e-5)
+    parser.add_argument("--dynamics", choices=("hk", "deffuant"), default="hk")
+    parser.add_argument(
+        "--opinion-method",
+        choices=("measure", "fokker_planck"),
+        default="fokker_planck",
+    )
+    parser.add_argument("--mean-degree", type=int, default=15)
+    parser.add_argument("--recsys-count", type=int, default=10)
     parser.add_argument(
         "--recsys",
         default="random",
         choices=(
-            "random", "opinion", "opinionm9", "structure", "structurem9",
+            "random",
+            "opinion_random",
+            "structure_random_l0",
+            "structure_random_l1",
         ),
     )
-    parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 1, 4))
+    parser.add_argument("--recommendation-steepness", type=float, default=1.0)
+    parser.add_argument("--opinion-tolerance", type=float, default=0.4)
+    parser.add_argument("--random-ratio", type=float, default=0.0)
+    parser.add_argument(
+        "--confidence-mode",
+        choices=("center", "cell_average"),
+        default="cell_average",
+    )
+    parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--population", type=int, default=500)
+    parser.add_argument("--opinion-min", type=float, default=-1.0)
+    parser.add_argument("--opinion-max", type=float, default=1.0)
+    parser.add_argument("--opinion-quadrature-points", type=int, default=5)
+    parser.add_argument("--confidence-quadrature-points", type=int, default=5)
+    parser.add_argument("--score-max", type=int, default=45)
+    parser.add_argument("--distance-grid-size", type=int, default=256)
+    parser.add_argument("--minimum-bandwidth", type=float, default=0.01)
+    parser.add_argument("--objective-effective-samples", type=int, default=10_000)
+    parser.add_argument("--polarization-threshold", type=float, default=0.5)
+    parser.add_argument("--homophily-threshold", type=float, default=0.5)
     output_root = MESOSCOPIC_OUTPUT.resolve()
     parser.add_argument(
         "--output-dir",
@@ -365,37 +379,66 @@ def main() -> None:
     args = parse_args()
     base = KineticParameters(
         epsilon=args.epsilon,
+        influence=0.0,
+        rewiring=0.0,
+        dynamics=args.dynamics,
+        opinion_method=args.opinion_method,
+        mean_degree=float(args.mean_degree),
+        recsys_count=args.recsys_count,
         recsys=args.recsys,
+        recommendation_steepness=args.recommendation_steepness,
+        recommendation_random_ratio=args.random_ratio,
+        opinion_tolerance=args.opinion_tolerance,
         noise_diffusion=args.noise,
         grid_size=args.grid_size,
         dt=args.dt,
         steps=args.steps,
         record_every=args.record_every,
+        confidence_mode=args.confidence_mode,
     )
-    cases = [
-        (q_index, alpha_index, base)
+    indexed_cases = [
+        (q_index, alpha_index)
         for q_index in range(RATES.size)
         for alpha_index in range(RATES.size)
     ]
-    results: list[SweepResult] = []
-    if args.jobs == 1:
-        for count, case in enumerate(cases, start=1):
-            result = _solve_case(*case)
-            results.append(result)
-            print(
-                f"[{count:03d}/{len(cases)}] alpha={RATES[result.alpha_index]:g}, "
-                f"q={RATES[result.q_index]:g}, I_w={result.pathway:.3f}"
-            )
-    else:
-        with ProcessPoolExecutor(max_workers=args.jobs) as executor:
-            futures = [executor.submit(_solve_case, *case) for case in cases]
-            for count, future in enumerate(as_completed(futures), start=1):
-                result = future.result()
-                results.append(result)
-                print(
-                    f"[{count:03d}/{len(cases)}] alpha={RATES[result.alpha_index]:g}, "
-                    f"q={RATES[result.q_index]:g}, I_w={result.pathway:.3f}"
-                )
+    cases = [
+        (
+            f"q{q_index}-a{alpha_index}",
+            replace(
+                base,
+                influence=float(RATES[alpha_index]),
+                rewiring=float(RATES[q_index]),
+            ),
+        )
+        for q_index, alpha_index in indexed_cases
+    ]
+    resolution = ObservableResolution(
+        population=args.population,
+        opinion_min=args.opinion_min,
+        opinion_max=args.opinion_max,
+        opinion_quadrature_points=args.opinion_quadrature_points,
+        confidence_quadrature_points=args.confidence_quadrature_points,
+        score_max=args.score_max,
+        distance_grid_size=args.distance_grid_size,
+        minimum_bandwidth=args.minimum_bandwidth,
+        objective_effective_samples=args.objective_effective_samples,
+    )
+    thresholds = ObservableThresholds(
+        polarization=args.polarization_threshold,
+        homophily=args.homophily_threshold,
+    )
+    series = solve_observable_batch(
+        args.kinetic_binary, cases, resolution, thresholds, args.jobs, None
+    )
+    results = [
+        _sweep_result(q_index, alpha_index, values)
+        for (q_index, alpha_index), values in zip(indexed_cases, series, strict=True)
+    ]
+    for count, result in enumerate(results, start=1):
+        print(
+            f"[{count:03d}/{len(results)}] alpha={RATES[result.alpha_index]:g}, "
+            f"q={RATES[result.q_index]:g}, I_w={result.pathway:.3f}"
+        )
 
     arrays = _result_arrays(results)
     _save_data(results, arrays, args.output_dir, base)
@@ -409,6 +452,9 @@ def main() -> None:
         configuration={
             "rates": RATES.tolist(),
             "jobs": args.jobs,
+            "kinetic_binary": str(args.kinetic_binary.resolve()),
+            "observable_resolution": asdict(resolution),
+            "observable_thresholds": asdict(thresholds),
             "skip_plots": args.skip_plots,
             "output_dir": str(args.output_dir.resolve()),
             "figure_dir": str(args.figure_dir.resolve()),

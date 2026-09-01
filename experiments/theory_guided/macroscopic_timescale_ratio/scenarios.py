@@ -1,4 +1,4 @@
-"""Scenario and numerical-protocol definitions for the B=81 scan."""
+"""Scenario and numerical-protocol definitions for the time-scale scan."""
 
 from __future__ import annotations
 

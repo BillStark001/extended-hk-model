@@ -128,8 +128,6 @@ def _save_arrays(result: ComparisonResult, output_dir: Path) -> None:
         "rho_epsilon": indices.homophily_raw,
         "I_w": np.asarray(indices.pathway),
     }
-    if trajectory.structural_score is not None:
-        arrays["structural_score"] = trajectory.structural_score
     np.savez_compressed(output_dir / f"{result.case.key}_{result.level}.npz", **arrays)
 
 
@@ -286,11 +284,8 @@ def main(argv: list[str] | None = None) -> None:
         "potential_scale": "velocity divided by influence",
         "source_sha256": {
             "comparison": _sha256(Path(__file__).resolve()),
-            "solver": _sha256(
-                REPOSITORY_ROOT / "src/ehk/modeling/mesoscopic/solver.py"
-            ),
-            "directional_wedge": _sha256(
-                REPOSITORY_ROOT / "src/ehk/modeling/mesoscopic/directional_wedge.py"
+            "go_adapter": _sha256(
+                REPOSITORY_ROOT / "src/ehk/modeling/mesoscopic/go_kinetic.py"
             ),
         },
     }

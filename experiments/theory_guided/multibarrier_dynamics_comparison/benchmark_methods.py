@@ -17,9 +17,9 @@ import numpy as np
 from ehk.modeling.mesoscopic import KineticParameters, solve
 
 COMBINATIONS = (
-    ("hk", "nonlocal_jump"),
+    ("hk", "measure"),
     ("hk", "fokker_planck"),
-    ("deffuant", "nonlocal_jump"),
+    ("deffuant", "measure"),
     ("deffuant", "fokker_planck"),
 )
 
@@ -254,11 +254,11 @@ def benchmark(
                     for row in matching
                     if row["opinion_method"] == method
                 )
-                for method in ("nonlocal_jump", "fokker_planck")
+                for method in ("measure", "fokker_planck")
             }
-            if set(by_method) == {"nonlocal_jump", "fokker_planck"}:
-                ratios[f"B{grid_size}_{dynamics}_jump_over_fp"] = (
-                    by_method["nonlocal_jump"] / by_method["fokker_planck"]
+            if set(by_method) == {"measure", "fokker_planck"}:
+                ratios[f"B{grid_size}_{dynamics}_measure_over_fp"] = (
+                    by_method["measure"] / by_method["fokker_planck"]
                     if by_method["fokker_planck"] > 0
                     else float("nan")
                 )
@@ -272,7 +272,7 @@ def benchmark(
         "idealized_wall_hours_at_requested_jobs": total_cpu_seconds
         / (3600.0 * jobs_for_estimate),
         "jobs_for_estimate": jobs_for_estimate,
-        "jump_over_fp_ratios": ratios,
+        "measure_over_fp_ratios": ratios,
         "caveat": (
             "uses a measured target horizon when supplied, otherwise linear "
             "extrapolation; BLAS contention and physical-point variation can "

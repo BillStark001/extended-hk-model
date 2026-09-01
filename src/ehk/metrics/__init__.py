@@ -17,31 +17,23 @@ from .landscape_diagnostics import (
     quantify_multiwell_series,
 )
 from .macroscopic_timescale import (
-    ChannelContributionSeries,
     ChannelProgressSnapshot,
-    ChannelWindowSummary,
-    calculate_channel_contributions,
-    calculate_channel_progress_snapshots,
-    summarize_channel_window,
+    calculate_initial_channel_snapshot,
 )
 
 __all__ = [
-    "ChannelContributionSeries",
     "ChannelProgressSnapshot",
-    "ChannelWindowSummary",
     "DensityIndexCalculator",
     "IndexSeries",
     "LandscapeSeries",
     "LandscapeSnapshot",
     "MultiwellSeries",
     "MultiwellSnapshot",
-    "calculate_channel_contributions",
-    "calculate_channel_progress_snapshots",
+    "calculate_initial_channel_snapshot",
     "calculate_index_series",
     "potential_from_force",
     "quantify_landscape",
     "quantify_landscape_series",
     "quantify_multiwell",
     "quantify_multiwell_series",
-    "summarize_channel_window",
 ]

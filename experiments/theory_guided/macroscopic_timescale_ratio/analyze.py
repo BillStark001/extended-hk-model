@@ -1,4 +1,4 @@
-"""Fit transition offsets and plot the seven-scenario B=81 scan."""
+"""Fit continuous-pathway transition offsets and plot a completed scan."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Rectangle
 from scipy.optimize import minimize
-from scipy.special import expit
+from scipy.special import expit, logit
 
 from ehk.common.plotting import setup_paper_params
 from experiments.theory_guided.macroscopic_timescale_ratio.run import (
@@ -24,11 +24,10 @@ from experiments.theory_guided.macroscopic_timescale_ratio.scenarios import (
 )
 from theory.paths import MESOSCOPIC_OUTPUT
 
-PREDICTORS = ("rate_ratio", "gamma_0", "gamma_0p1")
+PREDICTORS = ("rate_ratio", "gamma_0")
 PREDICTOR_LABELS = {
     "rate_ratio": r"raw $q/\alpha$",
     "gamma_0": r"$\Gamma(0)$",
-    "gamma_0p1": r"$\Gamma(0.1)$",
 }
 
 
@@ -59,11 +58,6 @@ def load_cells(path: Path) -> list[TimescaleCell]:
               opinion_rate_gamma_0=float(row["opinion_rate_gamma_0"]),
               rewiring_rate_gamma_0=float(row["rewiring_rate_gamma_0"]),
               gamma_0=float(row["gamma_0"]),
-              gamma_0p1_time=float(row["gamma_0p1_time"]),
-              gamma_0p1_reached=row["gamma_0p1_reached"].casefold() == "true",
-              opinion_rate_gamma_0p1=float(row["opinion_rate_gamma_0p1"]),
-              rewiring_rate_gamma_0p1=float(row["rewiring_rate_gamma_0p1"]),
-              gamma_0p1=float(row["gamma_0p1"]),
           )
       )
   return cells
@@ -74,8 +68,6 @@ def _predictor_value(cell: TimescaleCell, predictor: str) -> float:
     return cell.rate_ratio
   if predictor == "gamma_0":
     return cell.gamma_0
-  if predictor == "gamma_0p1":
-    return cell.gamma_0p1
   raise KeyError(predictor)
 
 
@@ -96,7 +88,7 @@ def fit_transition_offsets(
       cell
       for cell in cells
       if cell.configuration in group_lookup
-      and cell.path in {"PbS", "SbP"}
+      and np.isfinite(cell.pathway)
       and not np.isnan(_predictor_value(cell, predictor))
   ]
   if not selected:
@@ -104,7 +96,9 @@ def fit_transition_offsets(
   values = np.asarray(
       [_log_value(_predictor_value(cell, predictor)) for cell in selected]
   )
-  labels = np.asarray([cell.path == "SbP" for cell in selected], dtype=float)
+  labels = np.asarray([cell.pathway for cell in selected], dtype=float)
+  if np.any((labels < 0.0) | (labels > 1.0)):
+    raise ValueError(f"{predictor}: pathway response lies outside [0, 1]")
   groups = np.asarray(
       [group_lookup[cell.configuration] for cell in selected], dtype=int
   )
@@ -151,7 +145,7 @@ def fit_transition_offsets(
   weights = probability * (1.0 - probability)
   hessian = design.T @ (weights[:, None] * design)
   covariance = np.linalg.pinv(hessian, hermitian=True)
-  centers = -parameters[:-1] / slope
+  centers = (logit(0.6) - parameters[:-1]) / slope
   equal_center = float(np.mean(centers))
   offsets = centers - equal_center
   rows = []
@@ -187,6 +181,8 @@ def fit_transition_offsets(
       "count": len(selected),
       "converged": bool(fit.success or gradient_norm <= 1e-4),
       "gradient_infinity_norm": gradient_norm,
+      "response": "continuous_I_w",
+      "transition_level": 0.6,
   }
   return metrics, rows
 
@@ -274,7 +270,7 @@ def _plot_pathway_heatmaps(
         values,
         origin="lower",
         aspect="equal",
-        cmap="coolwarm",
+        cmap="RdYlBu_r",
         vmin=0.0,
         vmax=1.0,
     )
@@ -336,7 +332,6 @@ def _plot_transition_offsets(
   styles = {
       "rate_ratio": ("tab:blue", "o", -0.19),
       "gamma_0": ("tab:orange", "s", 0.0),
-      "gamma_0p1": ("tab:green", "^", 0.19),
   }
   plotted: dict[str, np.ndarray] = {}
   for predictor in PREDICTORS:
@@ -402,12 +397,12 @@ def _plot_transition_offsets(
     axis.legend(
         frameon=False,
         fontsize=8,
-        title="common-slope logistic fit (95% fit intervals)",
+        title="continuous-Iw fractional-logit fit (95% fit intervals)",
         title_fontsize=7,
     )
   for suffix in ("pdf", "png"):
     figure.savefig(
-        output_dir / f"f_transition_offsets_three_coordinates.{suffix}",
+        output_dir / f"f_transition_offsets.{suffix}",
         dpi=300,
         bbox_inches="tight",
     )
@@ -427,13 +422,10 @@ def _write_results_note(
       for row in rows
   }
   lines = [
-      "# B=81 macroscopic time-scale result",
+      "# Macroscopic time-scale result",
       "",
       f"The scan contains {len(cells)} cells across {len(scenarios)} scenarios.",
-      (
-          "Gamma(0.1) uses the pointwise frozen-channel rate ratio at "
-          "u=I_p+I_h=0.1, not an integrated time-window ratio."
-      ),
+      "Transition centers fit the same continuous I_w shown in the heatmaps.",
       "",
       "## Transition-offset spread",
       "",
@@ -461,8 +453,8 @@ def _write_results_note(
           "",
           "## Full-grid centered offsets",
           "",
-          "| scenario | q/alpha | Gamma(0) | Gamma(0.1) |",
-          "|---|---:|---:|---:|",
+          "| scenario | q/alpha | Gamma(0) |",
+          "|---|---:|---:|",
       ]
   )
   for scenario in scenarios:
@@ -473,11 +465,8 @@ def _write_results_note(
           f"{float(row['offset_log10']):+.4f}" if row is not None else "n/a"
       )
     lines.append(f"| {scenario.display_name} | {' | '.join(values)} |")
-  censored = sum(not cell.gamma_0p1_reached for cell in cells)
   lines.extend(
       [
-          "",
-          f"Gamma(0.1) was censored in {censored} of {len(cells)} cells.",
           "",
           (
               "The L1, zeta=4 column is a mean-power first-moment closure "
@@ -525,7 +514,7 @@ def parse_args() -> argparse.Namespace:
       "--output-dir",
       type=Path,
       default=(
-          MESOSCOPIC_OUTPUT.resolve() / "macroscopic_timescale_ratio_b81"
+          MESOSCOPIC_OUTPUT.resolve() / "macroscopic_timescale_ratio_b161"
       ),
   )
   return parser.parse_args()

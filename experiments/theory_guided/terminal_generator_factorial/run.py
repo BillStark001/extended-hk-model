@@ -101,7 +101,9 @@ def _build_requests(
                     "confidence_level": 0.95,
                     "workers": workers_per_request,
                     "seed": _request_seed(int(config["base_seed"]), request_id),
-                    "major_cluster_mass": 0.002,
+                    "major_cluster_mass": 0.02,
+                    "terminal_position_resolution": 2.0 / int(model["grid_size"]),
+                    "terminal_mass_resolution": 1.0 / int(model["population"]),
                     "dynamics": {
                         "type": "hk",
                         "tolerance": float(model["epsilon"]),

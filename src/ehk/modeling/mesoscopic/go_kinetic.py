@@ -6,11 +6,13 @@ performed exclusively by ``smp-kinetic`` from social-media-mesoscopic-models.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+import math
 import os
+from collections.abc import Sequence
+from dataclasses import asdict, dataclass
 from os import PathLike
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -84,6 +86,38 @@ class ObservableThresholds:
     homophily: float = 0.8
 
 
+@dataclass(frozen=True)
+class KineticStopping:
+    """Early-stopping controls; ``steps`` remains the hard safety ceiling."""
+
+    mode: str = "fixed_steps"
+    minimum_steps: int = 0
+    check_every: int = 1
+    patience_steps: int = 1
+    state_l1_tolerance: float = 0.0
+    energy_absolute_tolerance: float = 0.0
+    energy_relative_tolerance: float = 0.0
+
+    def validate(self, maximum_steps: int) -> None:
+        if self.mode.casefold() not in {
+            "fixed_steps", "state", "energy", "state_and_energy", "state_or_energy"
+        }:
+            raise ValueError(f"unsupported stopping mode {self.mode!r}")
+        if not 0 <= self.minimum_steps <= maximum_steps:
+            raise ValueError("minimum_steps must lie in [0, steps]")
+        if self.check_every < 1 or self.patience_steps < 1:
+            raise ValueError("check_every and patience_steps must be positive")
+        if self.mode.casefold() != "fixed_steps" and self.check_every > maximum_steps:
+            raise ValueError("adaptive check_every must not exceed steps")
+        tolerances = (
+            self.state_l1_tolerance,
+            self.energy_absolute_tolerance,
+            self.energy_relative_tolerance,
+        )
+        if any(not math.isfinite(value) or value < 0 for value in tolerances):
+            raise ValueError("stopping tolerances must be finite and nonnegative")
+
+
 ObservableResolution = KineticResolution
 
 
@@ -95,9 +129,46 @@ class ObservableSeries:
     subjective: FloatArray
     homophily: FloatArray
     homophily_raw: FloatArray
+    node_energy: FloatArray
+    edge_energy: FloatArray
     pathway: float
     polarization_first_passage: float
     homophily_first_passage: float
+    max_node_mass_residual: float
+    max_fixed_degree_residual: float
+
+
+@dataclass(frozen=True)
+class DensityVelocitySeries:
+    """Only the kinetic fields needed to reconstruct an opinion landscape."""
+
+    request_id: str
+    parameters: KineticParameters
+    x: FloatArray
+    time: FloatArray
+    rho: FloatArray
+    velocity: FloatArray
+    pathway: float
+    final_rho: FloatArray | None
+    final_edge: FloatArray | None
+    max_node_mass_residual: float
+    max_fixed_degree_residual: float
+
+
+@dataclass(frozen=True)
+class MultimetricSeries:
+    """Scalar energy history plus final fields for method-validity metrics."""
+
+    request_id: str
+    parameters: KineticParameters
+    time: FloatArray
+    node_energy: FloatArray
+    edge_energy: FloatArray
+    pathway: float
+    final_rho: FloatArray
+    final_edge: FloatArray
+    max_node_mass_residual: float
+    max_fixed_degree_residual: float
 
 
 @dataclass
@@ -109,6 +180,8 @@ class KineticTrajectory:
     velocity: FloatArray
     edge: FloatArray
     rewiring_flux: FloatArray
+    node_potential: FloatArray
+    edge_potential: FloatArray
 
     def metadata(self) -> dict[str, Any]:
         return asdict(self.parameters)
@@ -118,12 +191,55 @@ def kinetic_request(
     request_id: str,
     parameters: KineticParameters,
     resolution: KineticResolution,
-    thresholds: ObservableThresholds = ObservableThresholds(),
+    thresholds: ObservableThresholds | None = None,
     record_steps: Sequence[int] = (),
+    snapshot_fields: Sequence[str] | None = None,
+    final_snapshot_fields: Sequence[str] = (),
+    observable_fields: Sequence[str] | None = None,
+    stopping: KineticStopping | None = None,
 ) -> dict[str, object]:
     parameters.validate()
+    thresholds = thresholds or ObservableThresholds()
+    stopping = stopping or KineticStopping()
+    stopping.validate(parameters.steps)
     steps = np.asarray(tuple(record_steps), dtype=np.float64)
     snapshots = steps.size > 0
+    available_snapshot_fields = {
+        "rho", "edge", "velocity", "rewiring_flux", "node_potential", "edge_potential",
+    }
+    selected_snapshot_fields = (
+        available_snapshot_fields
+        if snapshots and snapshot_fields is None
+        else set(snapshot_fields or ())
+    )
+    unknown_snapshot_fields = selected_snapshot_fields - available_snapshot_fields
+    if unknown_snapshot_fields:
+        raise ValueError(
+            "unknown snapshot fields: " + ", ".join(sorted(unknown_snapshot_fields))
+        )
+    available_final_fields = {"rho", "edge", "node_potential", "edge_potential"}
+    selected_final_fields = set(final_snapshot_fields)
+    unknown_final_fields = selected_final_fields - available_final_fields
+    if unknown_final_fields:
+        raise ValueError(
+            "unknown final snapshot fields: " + ", ".join(sorted(unknown_final_fields))
+        )
+    default_observable_fields = {
+        "polarization", "subjective", "homophily", "homophily_raw", "pathway",
+        "polarization_first_passage", "homophily_first_passage",
+    }
+    available_observable_fields = default_observable_fields | {"node_energy", "edge_energy"}
+    selected_observable_fields = (
+        default_observable_fields
+        if observable_fields is None
+        else set(observable_fields)
+    )
+    unknown_observable_fields = selected_observable_fields - available_observable_fields
+    if unknown_observable_fields:
+        raise ValueError(
+            "unknown observable fields: "
+            + ", ".join(sorted(unknown_observable_fields))
+        )
     return {
         "request_id": request_id,
         "population": resolution.population,
@@ -162,13 +278,10 @@ def kinetic_request(
             "distance_grid_size": resolution.distance_grid_size,
         },
         "observables": {
-            "polarization": True,
-            "subjective": True,
-            "homophily": True,
-            "homophily_raw": True,
-            "pathway": True,
-            "polarization_first_passage": True,
-            "homophily_first_passage": True,
+            **{
+                field: field in selected_observable_fields
+                for field in sorted(available_observable_fields)
+            },
             "polarization_threshold": thresholds.polarization,
             "homophily_threshold": thresholds.homophily,
             "minimum_bandwidth": resolution.minimum_bandwidth,
@@ -176,11 +289,16 @@ def kinetic_request(
         },
         "snapshots": {
             "record_steps": steps,
-            "rho": snapshots,
-            "edge": snapshots,
-            "velocity": snapshots,
-            "rewiring_flux": snapshots,
+            **{
+                field: snapshots and field in selected_snapshot_fields
+                for field in sorted(available_snapshot_fields)
+            },
+            "final_rho": "rho" in selected_final_fields,
+            "final_edge": "edge" in selected_final_fields,
+            "final_node_potential": "node_potential" in selected_final_fields,
+            "final_edge_potential": "edge_potential" in selected_final_fields,
         },
+        "stopping": asdict(stopping),
     }
 
 
@@ -195,8 +313,10 @@ def observable_series(response: dict[str, object]) -> ObservableSeries:
     result = response["result"]
     if not isinstance(result, dict):
         raise TypeError("kinetic response has no result object")
-    series, summary = result["series"], result["summary"]
-    if not isinstance(series, dict) or not isinstance(summary, dict):
+    series, summary, diagnostics = (
+        result["series"], result["summary"], result.get("diagnostics", {})
+    )
+    if not isinstance(series, dict) or not isinstance(summary, dict) or not isinstance(diagnostics, dict):
         raise TypeError("kinetic response has invalid series or summary")
     return ObservableSeries(
         request_id=str(response["request_id"]),
@@ -205,9 +325,13 @@ def observable_series(response: dict[str, object]) -> ObservableSeries:
         subjective=np.asarray(series["subjective"], dtype=float),
         homophily=np.asarray(series["homophily"], dtype=float),
         homophily_raw=np.asarray(series["homophily_raw"], dtype=float),
+        node_energy=np.asarray(series.get("node_energy", ()), dtype=float),
+        edge_energy=np.asarray(series.get("edge_energy", ()), dtype=float),
         pathway=float(summary["pathway"]),
         polarization_first_passage=_passage(summary, "polarization_first_passage"),
         homophily_first_passage=_passage(summary, "homophily_first_passage"),
+        max_node_mass_residual=float(diagnostics.get("max_node_mass_residual", math.nan)),
+        max_fixed_degree_residual=float(diagnostics.get("max_fixed_degree_residual", math.nan)),
     )
 
 
@@ -230,6 +354,129 @@ def trajectory_from_response(
         velocity=np.asarray(snapshots["velocity"], dtype=float),
         edge=np.asarray(snapshots["edge"], dtype=float),
         rewiring_flux=np.asarray(snapshots["rewiring_flux"], dtype=float),
+        node_potential=np.asarray(snapshots["node_potential"], dtype=float),
+        edge_potential=np.asarray(snapshots["edge_potential"], dtype=float),
+    )
+
+
+def density_velocity_series(
+    response: dict[str, object],
+    parameters: KineticParameters,
+    resolution: KineticResolution,
+) -> DensityVelocitySeries:
+    """Decode the minimal fields and conservation diagnostics for landscapes."""
+
+    result = response.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("snapshots"), dict):
+        raise TypeError("Go response does not contain requested snapshots")
+    snapshots = result["snapshots"]
+    summary = result.get("summary", {})
+    diagnostics = result.get("diagnostics", {})
+    if not isinstance(summary, dict) or not isinstance(diagnostics, dict):
+        raise TypeError("Go response has invalid summary or diagnostics")
+    dx = (resolution.opinion_max - resolution.opinion_min) / parameters.grid_size
+    x = resolution.opinion_min + (np.arange(parameters.grid_size) + 0.5) * dx
+    time_values = np.asarray(snapshots["time"], dtype=float)
+    rho = np.asarray(snapshots["rho"], dtype=float)
+    velocity = np.asarray(snapshots["velocity"], dtype=float)
+    expected_shape = (time_values.size, parameters.grid_size)
+    if rho.shape != expected_shape or velocity.shape != expected_shape:
+        raise ValueError(
+            f"rho and velocity snapshots must have shape {expected_shape}"
+        )
+    final_rho = (
+        np.asarray(snapshots["final_rho"], dtype=float)
+        if "final_rho" in snapshots
+        else None
+    )
+    final_edge = (
+        np.asarray(snapshots["final_edge"], dtype=float)
+        if "final_edge" in snapshots
+        else None
+    )
+    if final_rho is not None and final_rho.shape != (parameters.grid_size,):
+        raise ValueError("final rho snapshot has the wrong shape")
+    if final_edge is not None and final_edge.shape != (
+        parameters.grid_size,
+        parameters.grid_size,
+    ):
+        raise ValueError("final edge snapshot has the wrong shape")
+    return DensityVelocitySeries(
+        request_id=str(response["request_id"]),
+        parameters=parameters,
+        x=x,
+        time=time_values,
+        rho=rho,
+        velocity=velocity,
+        pathway=float(summary.get("pathway", math.nan)),
+        final_rho=final_rho,
+        final_edge=final_edge,
+        max_node_mass_residual=float(
+            diagnostics.get("max_node_mass_residual", math.nan)
+        ),
+        max_fixed_degree_residual=float(
+            diagnostics.get("max_fixed_degree_residual", math.nan)
+        ),
+    )
+
+
+def multimetric_series(
+    response: dict[str, object],
+    parameters: KineticParameters,
+) -> MultimetricSeries:
+    """Decode energy observables and final density fields from one response."""
+
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise TypeError("Go response does not contain a result object")
+    series = result.get("series")
+    summary = result.get("summary")
+    snapshots = result.get("snapshots")
+    diagnostics = result.get("diagnostics", {})
+    if not isinstance(series, dict) or not isinstance(summary, dict):
+        raise TypeError("Go response has invalid scalar series or summary")
+    if not isinstance(snapshots, dict) or not isinstance(diagnostics, dict):
+        raise TypeError("Go response has invalid final snapshots or diagnostics")
+
+    time_values = np.asarray(series.get("time", ()), dtype=float)
+    node_energy = np.asarray(series.get("node_energy", ()), dtype=float)
+    edge_energy = np.asarray(series.get("edge_energy", ()), dtype=float)
+    expected_shape = (time_values.size,)
+    if time_values.size < 2 or node_energy.shape != expected_shape:
+        raise ValueError("node energy and time must have the same nontrivial shape")
+    if edge_energy.shape != expected_shape:
+        raise ValueError("edge energy and time must have the same shape")
+    if not np.all(np.isfinite(time_values)) or np.any(np.diff(time_values) <= 0):
+        raise ValueError("energy observation times must be finite and increasing")
+    if not np.all(np.isfinite(node_energy)) or not np.all(np.isfinite(edge_energy)):
+        raise ValueError("energy observations must be finite")
+
+    final_rho = np.asarray(snapshots.get("final_rho", ()), dtype=float)
+    final_edge = np.asarray(snapshots.get("final_edge", ()), dtype=float)
+    size = parameters.grid_size
+    if final_rho.shape != (size,):
+        raise ValueError("final rho snapshot has the wrong shape")
+    if final_edge.shape != (size, size):
+        raise ValueError("final edge snapshot has the wrong shape")
+    pathway = float(summary.get("pathway", math.nan))
+    if not math.isfinite(pathway):
+        raise ValueError("multimetric response is missing a finite pathway")
+
+    return MultimetricSeries(
+        request_id=str(response["request_id"]),
+        parameters=parameters,
+        time=time_values,
+        node_energy=node_energy,
+        edge_energy=edge_energy,
+        pathway=pathway,
+        final_rho=final_rho,
+        final_edge=final_edge,
+        max_node_mass_residual=float(
+            diagnostics.get("max_node_mass_residual", math.nan)
+        ),
+        max_fixed_degree_residual=float(
+            diagnostics.get("max_fixed_degree_residual", math.nan)
+        ),
     )
 
 
@@ -238,10 +485,11 @@ def solve_trajectory(
     *,
     record_steps: Sequence[int] | None = None,
     binary_path: PathLike[str] | str | None = None,
-    resolution: KineticResolution = KineticResolution(),
+    resolution: KineticResolution | None = None,
 ) -> KineticTrajectory:
     from smp_meso_bindings import run_kinetic
 
+    resolution = resolution or KineticResolution()
     if binary_path is None:
         configured = os.environ.get("SMP_KINETIC_BINARY")
         binary_path = (
@@ -293,6 +541,82 @@ def solve_trajectory_batch(
     return [
         trajectory_from_response(response, parameters, resolution)
         for response, (_, parameters, _) in zip(responses, cases, strict=True)
+    ]
+
+
+def solve_density_velocity_batch(
+    binary_path: PathLike[str] | str,
+    cases: list[tuple[str, KineticParameters, Sequence[int]]],
+    resolution: KineticResolution,
+    processes: int,
+    progress: ProgressCallback | None,
+    *,
+    final_snapshot_fields: Sequence[str] = (),
+) -> list[DensityVelocitySeries]:
+    """Run cases while transferring only fields needed by landscape metrics."""
+
+    from smp_meso_bindings import run_kinetic_batch, run_kinetic_batch_parallel
+
+    if processes < 1:
+        raise ValueError("processes must be positive")
+    requests = [
+        kinetic_request(
+            key,
+            parameters,
+            resolution,
+            record_steps=record_steps,
+            snapshot_fields=("rho", "velocity"),
+            final_snapshot_fields=final_snapshot_fields,
+        )
+        for key, parameters, record_steps in cases
+    ]
+    if processes == 1:
+        responses = run_kinetic_batch(binary_path, requests, progress=progress)
+    else:
+        responses = run_kinetic_batch_parallel(
+            binary_path, requests, min(processes, len(requests)), progress=progress
+        )
+    return [
+        density_velocity_series(response, parameters, resolution)
+        for response, (_, parameters, _) in zip(responses, cases, strict=True)
+    ]
+
+
+def solve_multimetric_batch(
+    binary_path: PathLike[str] | str,
+    cases: list[tuple[str, KineticParameters]],
+    resolution: KineticResolution,
+    processes: int,
+    progress: ProgressCallback | None,
+) -> list[MultimetricSeries]:
+    """Run energy histories, online terminal pathway, and final density snapshots."""
+
+    from smp_meso_bindings import run_kinetic_batch, run_kinetic_batch_parallel
+
+    if processes < 1:
+        raise ValueError("processes must be positive")
+    requests = [
+        kinetic_request(
+            key,
+            parameters,
+            resolution,
+            observable_fields=("pathway", "node_energy", "edge_energy"),
+            final_snapshot_fields=("rho", "edge"),
+        )
+        for key, parameters in cases
+    ]
+    if processes == 1:
+        responses = run_kinetic_batch(binary_path, requests, progress=progress)
+    else:
+        responses = run_kinetic_batch_parallel(
+            binary_path,
+            requests,
+            min(processes, len(requests)),
+            progress=progress,
+        )
+    return [
+        multimetric_series(response, parameters)
+        for response, (_, parameters) in zip(responses, cases, strict=True)
     ]
 
 

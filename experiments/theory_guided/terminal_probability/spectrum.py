@@ -328,7 +328,7 @@ def _microscopic_fields(frame: pd.DataFrame) -> tuple[tuple[str, str, str], ...]
         ("p_k2", r"$K=2$", "#e79f3c"),
         ("p_k3", r"$K=3$", "#c95b5b"),
         ("p_k4plus", r"$K\geq4$", "#8b6bb1"),
-        (missing, "incomplete", "#b8b8b8"),
+        (missing, "incomplete" if missing == "p_incomplete" else "censored", "#b8b8b8"),
     )
 
 

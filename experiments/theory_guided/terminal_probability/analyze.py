@@ -14,17 +14,17 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks
-from scipy.stats import gaussian_kde, norm
 from tqdm import tqdm
 
+from ehk.terminal import classify_opinions
 from experiments.theory_guided.terminal_probability.scenarios import (
     PAPER_COMPARISON_CASES,
     RECOMMENDATION_SCENARIOS,
 )
 
 
-CATEGORIES = ("k1", "k2", "k3", "k4plus")
+CATEGORIES = ("k1", "k2", "k3", "k4plus", "censored")
+SUCCESS_STATUSES = frozenset({"absorbed", "censored"})
 
 
 def _sha256(path: Path) -> str:
@@ -36,30 +36,16 @@ def _sha256(path: Path) -> str:
 
 
 def terminal_peak_count(opinions: np.ndarray, epsilon: float) -> int:
-    """Count major KDE peaks separated by more than the confidence radius."""
+    """Compatibility helper returning the common classifier's major count.
 
-    values = np.asarray(opinions, dtype=float)
-    if values.ndim != 1 or values.size < 2 or not np.all(np.isfinite(values)):
-        raise ValueError("terminal opinions must be a finite one-dimensional sample")
-    if not 0 < epsilon <= 2:
-        raise ValueError("epsilon must lie in (0, 2]")
+    Despite the historical name, this no longer performs KDE peak detection.
+    Nonabsorbed states have no terminal peak count and raise ``ValueError``.
+    """
 
-    axis = np.linspace(-1.0, 1.0, 1001)
-    sample_std = float(np.std(values, ddof=1))
-    if sample_std <= np.finfo(float).eps:
-        density = norm.pdf(axis, values[0], 0.1)
-    else:
-        def bandwidth(kde: gaussian_kde) -> float:
-            return max(kde.scotts_factor(), 0.1 / sample_std)
-
-        density = gaussian_kde(values, bw_method=bandwidth)(axis)
-    spacing = float(axis[1] - axis[0])
-    peaks, _ = find_peaks(
-        density,
-        height=float(np.max(density)) * 0.1,
-        distance=int(math.floor(epsilon / spacing)) + 1,
-    )
-    return max(int(peaks.size), 1)
+    result = classify_opinions(opinions, epsilon)
+    if result["status"] != "absorbed":
+        raise ValueError(f"state is not absorbed: {result['status']}")
+    return int(result["k_major"])
 
 
 def configuration_key(scenario: dict[str, Any]) -> str:
@@ -84,9 +70,9 @@ def comparison_case(alpha: float, rewiring: float) -> str:
 
 
 def _classify_payload(
-    payload: tuple[str, dict[str, Any]],
+    payload: tuple[str, dict[str, Any], float],
 ) -> dict[str, object]:
-    workspace_text, scenario = payload
+    workspace_text, scenario, major_cluster_mass = payload
     workspace = Path(workspace_text)
     unique_name = str(scenario["UniqueName"])
     run_dir = workspace / unique_name
@@ -98,9 +84,12 @@ def _classify_payload(
         "case": comparison_case(alpha, rewiring),
         "alpha": alpha,
         "q": rewiring,
-        "status": "incomplete",
+        "status": "failure",
+        "terminal_status": "",
+        "category": "",
         "steps": math.nan,
-        "k": math.nan,
+        "k_all": math.nan,
+        "k_major": math.nan,
     }
     try:
         if not run_dir.is_dir():
@@ -123,10 +112,23 @@ def _classify_payload(
         )
         opinions = np.asarray(state["opinions"][-1], dtype=float)
         row["steps"] = int(state["steps"])
-        row["k"] = terminal_peak_count(
-            opinions, float(scenario["HKParams"]["Tolerance"])
+        terminal = classify_opinions(
+            opinions,
+            float(scenario["HKParams"]["Tolerance"]),
+            major_cluster_mass,
+            mass_resolution=1.0 / len(opinions),
         )
-        row["status"] = "complete"
+        row.update({
+            "terminal_status": terminal["status"],
+            "category": terminal["category"],
+            "k_all": terminal["k_all"],
+            "k_major": terminal["k_major"],
+            "components": json.dumps(terminal["components"], separators=(",", ":")),
+            "margins": json.dumps(terminal["margins"], separators=(",", ":")),
+            "status": (
+                "absorbed" if terminal["status"] == "absorbed" else "censored"
+            ),
+        })
     except Exception as error:  # retain a partial audit instead of losing the batch
         row["status"] = "error"
         row["error"] = f"{type(error).__name__}: {error}"
@@ -135,7 +137,7 @@ def _classify_payload(
 
 def summarize(rows: Iterable[dict[str, object]]) -> pd.DataFrame:
     frame = pd.DataFrame(rows)
-    required = {"configuration", "case", "alpha", "q", "status", "k"}
+    required = {"configuration", "case", "alpha", "q", "status", "category"}
     missing = sorted(required - set(frame.columns))
     if missing:
         raise ValueError("run table is missing: " + ", ".join(missing))
@@ -148,29 +150,29 @@ def summarize(rows: Iterable[dict[str, object]]) -> pd.DataFrame:
     )
     for (configuration, case, alpha, rewiring), group in grouped:
         total = len(group)
-        complete = group[group["status"] == "complete"]
+        successful = group[group["status"].isin(SUCCESS_STATUSES)]
+        failed = total - len(successful)
         result: dict[str, object] = {
             "configuration": configuration,
             "case": case,
             "alpha": alpha,
             "q": rewiring,
             "runs_planned": total,
-            "runs_complete": len(complete),
-            "p_incomplete": 1 - len(complete) / total,
+            "runs_successful": len(successful),
+            "runs_failed": failed,
+            "failure_fraction": failed / total,
         }
         counts = {
-            "k1": int(np.sum(complete["k"] <= 1)),
-            "k2": int(np.sum(complete["k"] == 2)),
-            "k3": int(np.sum(complete["k"] == 3)),
-            "k4plus": int(np.sum(complete["k"] >= 4)),
+            category: int(np.sum(successful["category"] == category))
+            for category in CATEGORIES
         }
         for category in CATEGORIES:
             result[f"count_{category}"] = counts[category]
-            result[f"p_{category}"] = counts[category] / total
-        probability_mass = float(result["p_incomplete"]) + sum(
-            float(result[f"p_{category}"]) for category in CATEGORIES
-        )
-        if not math.isclose(probability_mass, 1.0, abs_tol=1e-12):
+            result[f"p_{category}"] = (
+                counts[category] / len(successful) if len(successful) else math.nan
+            )
+        probability_mass = sum(float(result[f"p_{category}"]) for category in CATEGORIES)
+        if len(successful) and not math.isclose(probability_mass, 1.0, abs_tol=1e-12):
             raise RuntimeError(
                 f"probability mass for {configuration}/{case} is {probability_mass}"
             )
@@ -199,6 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument(
+        "--major-cluster-mass", type=float, default=0.02,
+        help="minimum component mass counted by the shared terminal classifier",
+    )
+    parser.add_argument(
         "--limit", type=int,
         help="analyze only the first N manifest rows for pipeline debugging",
     )
@@ -213,6 +219,8 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.jobs < 1:
         raise ValueError("jobs must be positive")
+    if not 0 < args.major_cluster_mass <= 1:
+        raise ValueError("major-cluster-mass must lie in (0,1]")
     workspace = args.workspace.expanduser().resolve()
     manifest = (
         args.manifest.expanduser().resolve()
@@ -229,7 +237,10 @@ def main(argv: list[str] | None = None) -> None:
         if args.limit < 1:
             raise ValueError("limit must be positive")
         scenarios = scenarios[:args.limit]
-    payloads = [(str(workspace), scenario) for scenario in scenarios]
+    payloads = [
+        (str(workspace), scenario, args.major_cluster_mass)
+        for scenario in scenarios
+    ]
 
     if args.jobs == 1:
         rows = [_classify_payload(payload) for payload in tqdm(payloads)]
@@ -248,20 +259,23 @@ def main(argv: list[str] | None = None) -> None:
     run_table.to_csv(run_path, index=False)
     summary.to_csv(summary_path, index=False)
 
-    incomplete = int(np.sum(run_table["status"] != "complete"))
+    failed = int(np.sum(~run_table["status"].isin(SUCCESS_STATUSES)))
     metadata = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "command": [sys.executable, "-m", __package__ + ".analyze", *sys.argv[1:]],
         "workspace": str(workspace),
         "manifest": {"path": str(manifest), "sha256": _sha256(manifest)},
         "runs_planned": len(run_table),
-        "runs_complete": len(run_table) - incomplete,
-        "runs_incomplete": incomplete,
+        "runs_successful": len(run_table) - failed,
+        "runs_failed": failed,
         "classification": {
-            "axis": "1001 points on [-1,1]",
-            "minimum_bandwidth": 0.1,
-            "relative_height": 0.1,
-            "minimum_peak_distance": "strictly greater than epsilon",
+            "protocol": "atomic-measure-confidence-components-v1",
+            "occupied_mass": "0.5 / population",
+            "major_mass": args.major_cluster_mass,
+            "position_resolution": 0.0,
+            "mass_resolution": "1 / population",
+            "nonabsorbed_or_ambiguous": "censored",
+            "data_quality_failures_are_outcomes": False,
         },
         "outputs": [run_path.name, summary_path.name],
     }
@@ -271,11 +285,11 @@ def main(argv: list[str] | None = None) -> None:
     print(json.dumps({
         "output_dir": str(output_dir),
         "runs_planned": len(run_table),
-        "runs_complete": len(run_table) - incomplete,
-        "runs_incomplete": incomplete,
+        "runs_successful": len(run_table) - failed,
+        "runs_failed": failed,
     }, indent=2))
-    if args.require_complete and incomplete:
-        raise RuntimeError(f"{incomplete} runs are incomplete; see {run_path}")
+    if args.require_complete and failed:
+        raise RuntimeError(f"{failed} runs failed or are incomplete; see {run_path}")
 
 
 if __name__ == "__main__":

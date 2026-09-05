@@ -8,8 +8,9 @@ has a module entry point.
 
 The workflow does **not** identify the linear proxy with an exact terminal
 committor. The spectrum predicts a largest amplified Fourier mode above an
-onset threshold; the microscopic row independently counts major terminal KDE
-peaks. Comparing the two rows tests that mapping.
+onset threshold; the microscopic row independently applies the shared
+atomic-measure confidence-component classifier. Comparing the two rows tests
+that mapping.
 
 ## Entry points
 
@@ -89,8 +90,9 @@ identical, which keeps resume behavior from mixing two experiments.
 ## Analyze completed simulations
 
 The analysis reads the resolved manifest and only the last opinion row from
-each completed SMP accumulative state. Missing or unfinished runs remain an
-explicit `p_incomplete` category rather than being silently dropped.
+each completed SMP accumulative state. A successful run is either absorbed or
+scientifically censored (nonterminal/grid-ambiguous). Missing, unfinished, and
+unreadable runs are data-quality failures and never become an outcome category.
 
 ```bash
 python -m experiments.theory_guided.terminal_probability.analyze \
@@ -100,10 +102,12 @@ python -m experiments.theory_guided.terminal_probability.analyze \
 
 It writes `analysis/microscopic_terminal_runs.csv`,
 `analysis/microscopic_terminal_summary.csv`, and `analysis_metadata.json`.
-The run table contains one integer `k` per completed simulation. The summary
-contains `count_k1`, `count_k2`, `count_k3`, `count_k4plus` and their
-probabilities for every one of the 20 Figure 3 conditions. Runs without a
-valid finished state remain in the explicit `p_incomplete` category.
+The run table contains the classifier status, `k_all`, `k_major`, components,
+and threshold margins. The summary contains counts and probabilities for
+`k1`, `k2`, `k3`, `k4plus`, and `censored`, normalized over successful runs,
+plus `runs_failed` and `failure_fraction` against the planned total. The
+default major-component threshold is `0.02`; use
+`--major-cluster-mass` only for a predeclared sensitivity analysis.
 Use `--limit N` only to debug the loading/classification pipeline; a limited
 summary is not a paper result.
 

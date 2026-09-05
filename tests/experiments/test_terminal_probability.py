@@ -78,7 +78,7 @@ def test_comparison_cases_match_spectrum_and_micro_coordinates() -> None:
     ] == [case.key for case in PAPER_COMPARISON_CASES]
 
 
-def test_terminal_peak_classifier_and_incomplete_probability() -> None:
+def test_terminal_component_classifier_separates_censoring_from_failure() -> None:
     one_cluster = np.linspace(-0.05, 0.05, 500)
     two_clusters = np.concatenate([
         np.linspace(-0.65, -0.55, 250),
@@ -90,16 +90,21 @@ def test_terminal_peak_classifier_and_incomplete_probability() -> None:
     summary = summarize([
         {
             "configuration": "random", "case": "balanced",
-            "alpha": 0.05, "q": 0.05, "status": "complete", "k": 2,
+            "alpha": 0.05, "q": 0.05, "status": "absorbed", "category": "k2",
         },
         {
             "configuration": "random", "case": "balanced",
-            "alpha": 0.05, "q": 0.05, "status": "unfinished", "k": np.nan,
+            "alpha": 0.05, "q": 0.05, "status": "censored", "category": "censored",
+        },
+        {
+            "configuration": "random", "case": "balanced",
+            "alpha": 0.05, "q": 0.05, "status": "unfinished", "category": "",
         },
     ])
     row = summary.iloc[0]
     assert row["p_k2"] == 0.5
-    assert row["p_incomplete"] == 0.5
+    assert row["p_censored"] == 0.5
+    assert row["failure_fraction"] == 1 / 3
     assert sum(row[column] for column in (
-        "p_k1", "p_k2", "p_k3", "p_k4plus", "p_incomplete"
+        "p_k1", "p_k2", "p_k3", "p_k4plus", "p_censored"
     )) == 1.0

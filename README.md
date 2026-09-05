@@ -268,10 +268,13 @@ calls the Go `smp-kinetic` or `smp-lifted` runtime from
 `src/ehk/modeling/mesoscopic/` only translates requests and decoded responses.
 The Go kinetic runtime exposes explicit `measure` and `fokker_planck` paths,
 returns online observables, and can return only the requested `rho`, `edge`,
-velocity, and rewiring-flux snapshots. Install `smp_meso_bindings`, build the
-binaries there, and set `SMP_KINETIC_BINARY` when the sibling checkout is not
-at its standard location. Requests can also be sent directly to the Go JSONL
-interfaces; their complete, explicit schemas are documented in the
+velocity, and rewiring-flux snapshots. A request for `final_rho` or
+`final_edge` captures only the terminal array without retaining a trajectory;
+this is the preferred contract for terminal-density comparisons. Install
+`smp_meso_bindings`, build the binaries there, and set `SMP_KINETIC_BINARY`
+when the sibling checkout is not at its standard location. Requests can also
+be sent directly to the Go JSONL interfaces; their complete, explicit schemas
+are documented in the
 [`social-media-mesoscopic-models` README](https://github.com/billstark001/social-media-mesoscopic-models#lifted-request).
 
 For a saved explicit request, the Go commands support a single JSON request or
@@ -312,6 +315,120 @@ are not substitutes for either Go runtime.
 
 See `theory/mesoscopic/README.md` for assumptions and reproduction commands,
 and `theory/mesoscopic/RESULTS.md` for the corrected multi-resolution results.
+
+### Adaptive contour and boundary estimation
+
+`ehk.contours` implements the shared sequential estimator for continuous
+rate-space scans. Its coordinates are normally
+`(log10_alpha, log10_q) in [-3,0]^2`; every complete protocol JSON also fixes
+the groups, ordered grid fidelities, response transform, solver settings,
+target levels, level weights, validation design, and acquisition settings.
+The SHA-256 of canonical protocol JSON is part of every evaluation key. A
+cache point is reused only when that fingerprint, group, fidelity, coordinates,
+and replicate agree exactly.
+
+Initialize and inspect an experiment without running a solver:
+
+```bash
+ehk-contour init protocol.json /path/to/contour-run
+ehk-contour status /path/to/contour-run
+```
+
+The store contains immutable `protocol.json`/`protocol.sha256` plus append-only
+`proposals.jsonl`, `evaluations.jsonl`, and `progress.jsonl`. Each proposal is
+durably appended before the solver starts and each result is flushed and
+`fsync`ed, so an interrupted invocation resumes its pending action. Evaluation
+keys are idempotent and conflicting duplicate results are rejected. Scientific
+failures remain explicit records rather than missing values.
+
+For the deterministic measure--Fokker--Planck pathway response, run:
+
+```bash
+ehk-contour run /path/to/contour-run \
+  --adapter operator-gap --binary /path/to/smp-kinetic \
+  --max-evaluations 20 --progress jsonl
+ehk-contour export-grid /path/to/contour-run --resolution 501
+```
+
+The built-in operator adapter evaluates both methods as a two-item Go batch and
+returns `log10(abs(I_w_measure-I_w_fokker_planck))`. The solver accumulates
+`I_w` online at every numerical step, adds its declared completion term, and
+returns only the terminal scalar. Thus `I_w` is independent of the recording
+cadence used for other scalar series; `steps`, the time step, and the pathway
+observable settings remain estimand fields. Values at or below the protocol's
+independently declared numerical floor are left-censored. Do not replace a zero
+with an arbitrary small constant.
+
+For a non-`I_w` landscape response, set
+`response.observable=peak_dominant_barrier_height`, register the snapshot
+schedule and all multiwell thresholds under `response.landscape`, then use
+`--adapter landscape-barrier-gap`. This adapter reconstructs
+`potential_from_force(velocity / alpha)` and returns the logged absolute gap
+between the two methods' peak tracked dominant-barrier heights. Its Go request
+selects only `rho` and `velocity`; it does not transfer edge or rewiring-flux
+histories. `simulator.processes_per_evaluation=2` can evaluate the paired
+methods concurrently. The record schedule, tracking hysteresis, basin-mass and
+barrier-height cutoffs are part of the estimand and protocol fingerprint.
+
+`PairedMultimetricEvaluator` is the shared-solve adapter for experiments that
+compare several validity fields at once. At one rate-space coordinate it runs
+HK/Deffuant times measure/Fokker--Planck, requests trajectory snapshots only
+for the observables that need them, and reuses final-only density snapshots for
+terminal node/edge continuous-L2 gaps. The same result bundle can also contain
+tracked-barrier and pathway gaps, so eight scalar records share four solver
+trajectories. Each scalar evaluation remains separately keyed and queryable,
+while a per-point atomic checkpoint permits reconstruction after interruption.
+For terminal density L2, the adapter now requires both trajectories' final
+recorded times to equal the protocol's `steps*dt` and each other before it uses
+the final-only snapshots. For barrier and pathway responses it retains and
+fits the signed measure-minus-Fokker--Planck difference; `log10(abs(delta))` is
+applied only to the reported field. This keeps harmless sign crossings from
+becoming singular training targets.
+
+The shared-field production design can combine an anisotropic regular safety
+net with balanced batch acquisition. Candidate locations are shortlisted by
+pointwise uncertainty, then scored by standardized integrated variance
+reduction. An equal-weight mean, the currently worst integrated-risk field,
+and a rotating per-field quota determine the score; local penalization keeps
+the two points in a batch separated. Since every point produces all eight
+outputs, quotas influence coordinates without discarding any shared result.
+Global held-out points remain unbiased calibration checks, while separately
+reported high-rate and signed-zero challenge strata stress the known difficult
+regions.
+
+The surrogate is an exact ARD Matérn-5/2 GP over the two coordinates and
+inverse grid fidelity. It accepts known observation variance and iteratively
+propagates left/right censoring. An optional training-only leave-one-out
+quantile scale can inflate—but never shrink—predictive variance when the
+stationary mean/kernel understates local interpolation error. Acquisition approximates contour-weighted
+multi-level tIMSE, retains a global-variance term to avoid missing islands, and
+divides expected reduction by measured or declared fidelity cost. Its action
+space contains new points, promotion of an existing point to the next grid,
+and replication for noisy responses. The multinomial terminal adapter computes
+five-category TV and its sampling variance directly from generator/microscopic
+counts; failed runs are excluded from those counts, whereas a successful
+nonabsorbed run is the fifth `censored` outcome.
+
+Calibration must be reported in the representation actually fitted. For a
+signed response, good interval coverage for the signed difference does not
+imply that a single interval after `log10(abs(.))` will cover well near zero;
+the transformed posterior can be strongly non-Gaussian. A short fitted length
+scale or failed region-specific challenge coverage is a trigger for local or
+nonstationary refinement, and a narrow displayed zero trough is not by itself
+evidence for an equally narrow physical regime.
+
+Initial low-fidelity Sobol points and nested promotions precede acquisition.
+Held-out Sobol validation points are tagged `role=validation` and are never
+used to fit or stop the GP. The summary reports integrated sign-error risk,
+credible-band fractions, validation RMSE/coverage, failures, and the stopping
+reason. `posterior_grid.npz` only increases rendering resolution; it does not
+create observations. A production conclusion still requires held-out coverage,
+high-fidelity contour stability, and an acceptable `B=121` to `B=161` shift.
+
+Grid fidelity is never averaged as if it were a replicate. Group aggregation
+must be declared before the final scan (for example small multiples, pointwise
+quantiles, or worst case); averaging already extracted contour coordinates and
+choosing representative groups after seeing the result are unsupported.
 
 ### Event Database Schema
 
